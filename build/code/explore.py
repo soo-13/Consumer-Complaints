@@ -218,10 +218,9 @@ def plot_quarterly_trend_zombie_data():
     gp3 = df.groupby(['Quarter received', 'With narrative'], observed=False).size().unstack(fill_value=0)
 
     # reindex so all plots share the same x-axis
-    common_index = sorted(df['Quarter received'].unique())
-    gp1 = gp1.reindex(common_index, fill_value=0)
-    gp2 = gp2.reindex(common_index, fill_value=0)
-    gp3 = gp3.reindex(common_index, fill_value=0)
+    gp1 = gp1.reindex(quarter_index, fill_value=0)
+    gp2 = gp2.reindex(quarter_index, fill_value=0)
+    gp3 = gp3.reindex(quarter_index, fill_value=0)
 
     fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
 
@@ -254,9 +253,8 @@ def plot_quarterly_trend_zombie_data_CA():
     gp2o = df[(df['State'] != 'CA') & (df['Zombie data'] == 0)].groupby(['Quarter received', 'With narrative'], observed=False).size().unstack(fill_value=0) # other states other complaints
 
     # reindex so all plots share the same x-axis and complaints on zombie data is stacked below other complaints
-    common_index = sorted(df['Quarter received'].unique())
-    gp1z = gp1z.reindex(common_index, fill_value=0)
-    gp2z = gp2z.reindex(common_index, fill_value=0)
+    gp1z = gp1z.reindex(quarter_index, fill_value=0)
+    gp2z = gp2z.reindex(quarter_index, fill_value=0)
 
     def plot_stacked(ax, grouped, title):
         grouped.plot(kind='bar', stacked=True, ax=ax, color={1: '#1f77b4', 0: '#ff7f0e'}, width=0.8)
@@ -285,6 +283,83 @@ def plot_quarterly_trend_zombie_data_CA():
     axes[1].set_xlabel("Quarter")
     save_plot(fig, 'quarterly_trend_other_complaints_CA.png')
 
+def plot_quarterly_trend_zombie_data_most_complaints_states(): # top 3 states with most complaints
+    states = df['State'].value_counts().nlargest(3).index.tolist()
+
+    ncomplaints = {}
+    for state in states:
+        ncomplaints[f'z{state}'] = df[(df['State'] == state) & (df['Zombie data'] == 1)].groupby(['Quarter received', 'With narrative'], observed=False).size().unstack(fill_value=0).reindex(quarter_index)
+        ncomplaints[f'o{state}'] = df[(df['State'] == state) & (df['Zombie data'] == 0)].groupby(['Quarter received', 'With narrative'], observed=False).size().unstack(fill_value=0).reindex(quarter_index)
+
+    def plot_stacked(ax, grouped, title):
+        grouped.plot(kind='bar', stacked=True, ax=ax, color={1: '#1f77b4', 0: '#ff7f0e'}, width=0.8)
+        ax.set_title(title)
+        ax.set_ylabel("Complaint count")
+        label_map = {True: "With narrative", 0: "No narrative"}
+        ax.legend([label_map.get(col, str(col)) for col in grouped.columns], loc='best')
+
+        for label, q in CCPA_quarters.items(): # draw vertical lines at the time of policy event
+            try:
+                idx = grouped.index.astype(str).tolist().index(q)
+                ax.axvline(x=idx - 0.5, color='grey', linestyle='--', linewidth=1)
+                ax.text(idx, ax.get_ylim()[1]*0.5, label, color='grey', ha='center', rotation=90, fontsize=10)
+            except ValueError:
+                continue  # skip if the time of event is out of time range shown in the plot
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 18), sharex=True)
+    for i in range(3):
+        plot_stacked(axes[i], ncomplaints[f'z{states[i]}'], states[i])
+    axes[2].set_xlabel("Quarter")
+    save_plot(fig, 'quarterly_trend_zdata_most_complaints_states.png')
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 18), sharex=True)
+    for i in range(3):
+        plot_stacked(axes[i], ncomplaints[f'o{states[i]}'], states[i])
+    axes[2].set_xlabel("Quarter")
+    save_plot(fig, 'quarterly_trend_others_most_complaints_states.png')
+
+def plot_quarterly_companies_in_top_states(n):
+    states = df['State'].value_counts().nlargest(n).index.tolist()
+    companies = df['Company'].value_counts().nlargest(3).index.tolist()
+
+    def plot_line(ax, grouped, state, title):
+        grouped_prop = grouped.div(grouped.sum(axis=1), axis=0).fillna(0) * 100
+        grouped_prop.index = grouped_prop.index.astype(str)
+        grouped_prop.plot(ax=ax, marker='o')
+        ax.set_title(title)
+        ax.set_ylabel("Complaint share (%)")
+        ax.set_xlabel("Quarter complaints were received")
+        ax.legend(title="Company", bbox_to_anchor=(1.05, 1), loc='best')
+
+        ax.set_xticks(range(len(grouped_prop.index))) 
+        ax.set_xticklabels(grouped_prop.index, rotation=90, ha='right') 
+
+        policy_date = df[df['State'] == state]['State privacy law'].dropna().unique() # plot policy line of state has implemented state privacy protection policy
+        if len(policy_date) > 0:
+            try:
+                policy_quarter = pd.to_datetime(policy_date[0]).to_period("Q").strftime("%YQ%q")
+                idx = grouped_prop.index.astype(str).tolist().index(str(policy_quarter))
+                print(f"idx for {state}: {idx}")
+                ax.axvline(x=idx, color='grey', linestyle='--', linewidth=1)
+                ax.text(idx, ax.get_ylim()[1] * 0.5, f"{state} policy\nimplementation",
+                        color='grey', ha='center', rotation=90, fontsize=10)
+            except ValueError:
+                pass
+
+    df['Top company'] = df['Company'].where(df['Company'].isin(companies), other='Others')
+
+    for state in states: 
+        fig, axes = plt.subplots(2, 1, figsize=(14, 12), sharex=True)
+        ztab = df[(df['State'] == state) & (df['Zombie data'] == 1)].groupby(['Quarter received', 'Top company'], observed=False).size().unstack(fill_value=0).reindex(quarter_index)
+        otab = df[(df['State'] == state) & (df['Zombie data'] == 0)].groupby(['Quarter received', 'Top company'], observed=False).size().unstack(fill_value=0).reindex(quarter_index)
+
+        plot_line(axes[0], ztab, state, f'zombie data complaints / {state}')
+        plot_line(axes[1], otab, state, f'other complaints / {state}')
+        axes[1].set_xlabel("Quarter")
+        save_plot(fig, f'quarterly_trend_complaints_counts_{state}.png')
+
+    df.drop(columns='Top company', inplace=True)
+
 
 if __name__ == "__main__":
     # load dataset
@@ -299,6 +374,7 @@ if __name__ == "__main__":
     df['Year received'] = df['Year received'].astype('Int64') 
     df['Quarter sent'] = pd.PeriodIndex(df['Quarter sent'], freq='Q')
     df['Year sent'] = df['Year sent'].astype('Int64')
+    df['State privacy law'] = pd.to_datetime(df['State privacy law'])
 
     # set orders of categorical variables with order 
     duration_order = ['< 1 day', '1 day', '2 days', '3 days', '4 days', '5 days', '6 days', '7 days', 'within two weeks', 
@@ -318,20 +394,51 @@ if __name__ == "__main__":
     CCPA_timeline = {'CCPA enactment': '2018-06-28', 'CCPA implementation': '2020-01-01', 'CPRA amendment': '2020-11-03', 'CPRA implementation': '2023-01-01'}
     CCPA_quarters = {label: pd.to_datetime(date).to_period('Q').strftime('%YQ%q') for label, date in CCPA_timeline.items()}
 
-    # plots
-    visualize_duration_categorized()
-    visualize_yearly_trend_in_duration()
-    visualize_monthly_complaints_counts()
-    visualize_yearly_trend_in_company_response()
-    plot_quarterly_trend_zombie_data()
-    plot_quarterly_trend_zombie_data_CA()
+    # state-quarterly level plots
+    quarter_index = sorted(df['Quarter received'].unique())
+    #visualize_duration_categorized()
+    #visualize_yearly_trend_in_duration()
+    #visualize_monthly_complaints_counts()
+    #visualize_yearly_trend_in_company_response()
+    #plot_quarterly_trend_zombie_data()
+    #plot_quarterly_trend_zombie_data_CA()
+    #plot_quarterly_trend_zombie_data_most_complaints_states()
 
-    plot_category_distribution([subdf, mssdf], 'Product', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'product_distribution.png'), top_n=10)
-    plot_category_distribution([subdf, mssdf], 'Issue', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'issue_distribution.png'), top_n=10)
-    plot_category_distribution([subdf, mssdf], 'Company response to consumer', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'company_response_distribution.png'))
-    plot_category_distribution([subdf, mssdf], 'Timely response?', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'timely_response_distribution.png'))
-    plot_category_distribution([subdf, mssdf], 'State', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'state_distribution.png'), top_n=15)
+    #plot_category_distribution([subdf, mssdf], 'Product', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'product_distribution.png'), top_n=10)
+    #plot_category_distribution([subdf, mssdf], 'Issue', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'issue_distribution.png'), top_n=10)
+    #plot_category_distribution([subdf, mssdf], 'Company response to consumer', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'company_response_distribution.png'))
+    #plot_category_distribution([subdf, mssdf], 'Timely response?', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'timely_response_distribution.png'))
+    #plot_category_distribution([subdf, mssdf], 'State', ["With Narratives", "Missing Narratives"], os.path.join(cPATH, 'output', 'state_distribution.png'), top_n=15)
 
     # examples of consumer complaints narratives related to zombie data
-    for i in range(20):
-        print(subdf[subdf['Zombie data']==1]['Consumer complaint narrative'].iloc[i])
+    #for i in range(20):
+    #    print(subdf[subdf['Zombie data']==1]['Consumer complaint narrative'].iloc[i])
+
+    # state-financial bureau level analysis 
+    state_index = df['State'].value_counts().index.tolist()
+    company_index = df['Company'].value_counts().index.tolist()
+    ztab = df[df['Zombie data']==1].groupby(['State', 'Company'], observed=False).size().unstack(fill_value=0).reindex(index=state_index, columns=company_index).fillna(0) # zombie data complaints by state-financial bureau level 
+    otab = df[df['Zombie data']==0].groupby(['State', 'Company'], observed=False).size().unstack(fill_value=0).reindex(index=state_index, columns=company_index).fillna(0) # other complaints by state-financial bureau level 
+    zrow_sums = ztab.sum(axis=1)
+    orow_sums = otab.sum(axis=1)
+    zero_zobs_states = zrow_sums[zrow_sums == 0].index  # no zombie data complaints observed in these states
+    zero_oobs_states = orow_sums[orow_sums == 0].index  # no other complaints observed in these states
+    ztab_prop = (ztab.div(zrow_sums, axis=0)*100).fillna(0).round(0).astype(object) # proportion of complaints filed to each financial bureau for each state
+    otab_prop = (otab.div(orow_sums, axis=0)*100).fillna(0).round(0).astype(object)
+    for state in zero_zobs_states:
+        ztab_prop.loc[state] = ""
+        ztab_prop.loc[state, ztab_prop.columns[0]] = "zero complaints in this state"
+    for state in zero_oobs_states:
+        otab_prop.loc[state] = ""
+        otab_prop.loc[state, otab_prop.columns[0]] = "zero complaints in this state"
+
+    with pd.ExcelWriter(os.path.join(cPATH, 'temp', 'state_company.xlsx')) as writer:
+        ztab.to_excel(writer, sheet_name='zombie counts')
+        otab.to_excel(writer, sheet_name='others counts')
+        ztab_prop.to_excel(writer, sheet_name='zombie proportion')
+        otab_prop.to_excel(writer, sheet_name='others proportion')
+
+    plot_quarterly_companies_in_top_states(5)
+    print("exploratory analysis finished")
+    
+
