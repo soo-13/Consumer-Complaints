@@ -230,5 +230,12 @@ if __name__ == "__main__":
     print(df['Company type'].unique())
     print(df.groupby('Company type').count())
 
+    # save data with narratives to observe complaint narratives
+    narr = df[df['With narrative']==1] # complaints with narrative
+    znarr = df[(df['With narrative']==1) & (df['Zombie data'] == 1)] # complaints on zombie data with narrative
+    narr.to_csv(os.path.join(cPATH, 'temp', 'complaints_narratives.csv'))
+    znarr.to_csv(os.path.join(cPATH, 'temp', 'zombie_complaints_narratives.csv'))
+
+
     # save processed df
     df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
