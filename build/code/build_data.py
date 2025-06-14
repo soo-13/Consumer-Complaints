@@ -236,6 +236,8 @@ if __name__ == "__main__":
     narr.to_csv(os.path.join(cPATH, 'temp', 'complaints_narratives.csv'))
     znarr.to_csv(os.path.join(cPATH, 'temp', 'zombie_complaints_narratives.csv'))
 
+    # delete irrelevant columns
+    df.drop(['CHTR_TYPE_CD', '#ID_RSSD', 'ENTITY_TYPE', 'NM_LGL', 'type_priority'], axis=1)
 
     # save processed df
     df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
