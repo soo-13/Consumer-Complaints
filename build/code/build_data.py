@@ -1,6 +1,7 @@
 import glob
 import itertools
 import os
+import numpy as np
 import pandas as pd
 
 cPATH = os.path.join("/Users", "yeonsoo","Dropbox (MIT)", "Projects", "consumer_complaints", "build")
@@ -54,22 +55,31 @@ def state_privacy_law_implementation(state): # implementation date of CCPA is us
                            }
     return implementation_date.get(state, None)
 
-def read_cfpd_depository_institutions_list_excels():
-    files = list(itertools.chain.from_iterable(glob.glob(os.path.join(cPATH, 'input', 'CFPD', 'depository_institutions', ext)) for ext in ('*.xlsx', '*.xls')))
+def read_cfpd_depository_institutions_list_excels(override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv')):
+        deduped_renamed = pd.read_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv'))
+        return deduped_renamed 
 
+    files = list(itertools.chain.from_iterable(glob.glob(os.path.join(cPATH, 'input', 'CFPD', 'depository_institutions', ext)) for ext in ('*.xlsx', '*.xls')))
     dfs = []
     no_id = []
     for file in files:
         filename = os.path.basename(file)
         ext = filename.split('.')[-1]
         if filename == '201209_CFPB_depository-institutions-list.xls':
-            df = pd.read_excel(file, header=2, engine='xlrd')
+            # df = pd.read_excel(file, header=2, engine='xlrd')
+            df_all = pd.read_excel(file, sheet_name=None, header=2, engine='xlrd')
+            df = pd.concat(df_all.values(), ignore_index=True)
             df.columns = df.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
         elif ext == '.xls':
-            df = pd.read_excel(file, header=1, engine='xlrd')
+            # df = pd.read_excel(file, header=1, engine='xlrd')
+            df_all = pd.read_excel(file, sheet_name=None, header=1, engine='xlrd')
+            df = pd.concat(df_all.values(), ignore_index=True)
             df.columns = df.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
         else:
-            df = pd.read_excel(file, header=1)
+            # df = pd.read_excel(file, header=1)
+            df_all = pd.read_excel(file, sheet_name=None, header=1)
+            df = pd.concat(df_all.values(), ignore_index=True)
 
         if 'ID' not in df.columns:
             df = df[['Institution', 'City', 'State']]
@@ -79,7 +89,6 @@ def read_cfpd_depository_institutions_list_excels():
             df = df[['ID', 'Institution', 'City', 'State']]
             df['source_file'] = os.path.basename(file) 
             dfs.append(df)
-
 
     combined = pd.concat(dfs, ignore_index=True)
     deduped = combined.drop_duplicates(subset=['ID', 'Institution'])
@@ -125,14 +134,75 @@ def get_nic_data():
     priority = {'bank': 1, 'credit union': 2, 'bank holding company':3, 'insurance related':4, 'security related': 5, 'others':6}
     nic['type_priority'] = nic['Company type'].map(priority)
     priority_combos = (nic.groupby('NM_LGL')['type_priority'].apply(lambda x: tuple(sorted(x.unique()))).reset_index(name='priority_combo'))
-    print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'})) # number of 
+    # print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'}))
     nic_dedup = nic.sort_values('type_priority', ascending=True).drop_duplicates(subset='NM_LGL', keep='first')
 
     
     nic_dedup = nic_dedup.drop(['CHTR_TYPE_CD', 'ENTITY_TYPE', 'type_priority'], axis=1)
     nic_dedup = nic_dedup.drop_duplicates()
     return nic_dedup, nic
-    
+
+def quarter_to_period_end(quarter_str):
+    year = int(quarter_str[:4])
+    q = int(quarter_str[-1])
+    q_dict = {1: '03-31', 2: '06-30', 3: '09-30', 4: '12-31'}
+    return f"{year}-{q_dict[q]}"
+
+def get_ffiec_data(path, override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'ffiec_combined.csv')):
+        ffiec_all = pd.read_csv(os.path.join(cPATH, 'temp', 'ffiec_combined.csv'))
+        return ffiec_all 
+
+    all_files = glob.glob(os.path.join(path, '*', '*.txt'))
+    all_files = [f for f in all_files if os.path.basename(f) != 'Readme.txt'] # do not read Readme.txt 
+
+    ffiec_all = []
+    for file in all_files:
+        try:
+            ffiec = pd.read_csv(file, delimiter='\t', low_memory=False)
+            ffiec = ffiec[['Reporting Period End Date', 'IDRSSD', 'Financial Institution Name', 'RCFD2170']]  # RCFD2170 = Total Assets
+            ffiec_all.append(ffiec)
+        except Exception as e:
+            print(f"Error reading {file}: {e}") # the ffiec txt files are divided in columns - it is normal that some files do not contain RCFD2170 column and are excluded from ffiec_all
+
+    ffiec_all = pd.concat(ffiec_all, ignore_index=True)
+    ffiec_all = ffiec_all.drop(0)
+    ffiec_all.rename(columns={'RCFD2170': 'Total assets'}, inplace=True)
+    ffiec_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_combined.csv'), index=False)
+    return ffiec_all
+
+def get_ncua_data(path, override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'ncua_combined.csv')):
+        ncua_all = pd.read_csv(os.path.join(cPATH, 'temp', 'ncua_combined.csv'))
+        return ncua_all 
+
+    callrpt_dirs = glob.glob(os.path.join(path, '*'))
+    ncua_all = []
+
+    for callrpt_dir in callrpt_dirs:
+        foicu_path = os.path.join(callrpt_dir, 'foicu.txt')
+        fs220_path = os.path.join(callrpt_dir, 'fs220.txt')
+        
+        if os.path.exists(foicu_path) and os.path.exists(fs220_path):
+            foicu = pd.read_csv(foicu_path, delimiter=',', low_memory=False)
+            fs220 = pd.read_csv(fs220_path, delimiter=',', low_memory=False)
+
+            fs220 = fs220[['CU_NUMBER', 'CYCLE_DATE', 'ACCT_010']] # ACCT_010: total assets
+            if 'RSSD' in foicu.columns:
+                merged = fs220.merge(foicu[['CU_NUMBER', 'RSSD', 'CU_NAME']], on='CU_NUMBER', how='left')
+            else:
+                merged = fs220.merge(foicu[['CU_NUMBER', 'CU_NAME']], on='CU_NUMBER', how='left')
+                merged['RSSD'] = np.nan
+            ncua_all.append(merged)
+        else:
+            print(f"either FOICU.txt or FS200.txt does not exist for {os.path.basename(callrpt_dir)}")
+
+    ncua_all = pd.concat(ncua_all, ignore_index=True)
+    ncua_all.rename(columns={'ACCT_010': 'Total assets'}, inplace=True)
+    ncua_all['CYCLE_DATE'] = pd.to_datetime(ncua_all['CYCLE_DATE']).astype(str)
+    ncua_all.to_csv(os.path.join(cPATH, 'temp', 'ncua_combined.csv'), index=False)
+    return ncua_all
+
 if __name__ == "__main__":
     # basic statistics of the whole dataset
     df = pd.read_csv(os.path.join(cPATH, "input", "CFPD", "complaints.csv"))
@@ -199,7 +269,6 @@ if __name__ == "__main__":
     print(f"{df['#ID_RSSD'].isna().sum()} rows with missing #ID_RSSD :")
     print(df[['Company', '#ID_RSSD']].head())
 
-    #import pdb; pdb.set_trace()
     # get company type by merging with nic using RSSD ID
     df = df.merge(nic_raw, how='left', on='#ID_RSSD')
 
@@ -230,14 +299,36 @@ if __name__ == "__main__":
     print(df['Company type'].unique())
     print(df.groupby('Company type').count())
 
-    # save data with narratives to observe complaint narratives
+    ### financial institutions size (total assets)
+    ## get asset information for banks
+    ffiec_path = os.path.join(cPATH, 'input', 'FFIEC')
+    ffiec = get_ffiec_data(ffiec_path)
+    df['Quarter sent end date'] = df['Quarter sent'].astype(str).apply(quarter_to_period_end) # calcuate end date of quarter when the complain was sent to the company for match purpose
+    
+    bank = df[df['Company type']=='bank']
+    bank = bank.merge(ffiec, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['IDRSSD', 'Reporting Period End Date']) # all banks have #ID_RSSD, so match with RSSD ID
+    print(f"total assets identified for {bank['Total assets'].notna().sum()} out of {len(bank)} complaints filed to banks")
+
+    ## get asset information for credit unions
+    ncua_path = os.path.join(cPATH, 'input', 'NCUA')
+    ncua = get_ncua_data(ncua_path)
+
+    cu = df[df['Company type']=='credit union']
+    cu = cu.merge(ncua, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['RSSD', 'CYCLE_DATE']) # all credit unions have #ID_RSSD, so match with RSSD ID
+    print(f"total assets of identified for {cu['Total assets'].notna().sum()} out of {len(cu)} complaints filed to credit unions")
+
+    others = df[~df['Company type'].isin(['bank', 'credit union'])]
+    others['Total assets'] = np.nan
+    df = pd.concat([bank, cu, others], ignore_index=True)
+
+    ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
     znarr = df[(df['With narrative']==1) & (df['Zombie data'] == 1)] # complaints on zombie data with narrative
     narr.to_csv(os.path.join(cPATH, 'temp', 'complaints_narratives.csv'))
     znarr.to_csv(os.path.join(cPATH, 'temp', 'zombie_complaints_narratives.csv'))
 
-    # delete irrelevant columns
-    df.drop(['CHTR_TYPE_CD', '#ID_RSSD', 'ENTITY_TYPE', 'NM_LGL', 'type_priority'], axis=1)
+    ### delete irrelevant columns
+    df.drop(['CHTR_TYPE_CD', '#ID_RSSD', 'ENTITY_TYPE', 'NM_LGL', 'type_priority', 'Quarter sent end date', 'Reporting Period End Date', 'IDRSSD', 'Financial Institution Name', 'RSSD', 'CU_NAME', 'CU_NUMBER', 'CYCLE_DATE'], axis=1)
 
-    # save processed df
+    ### save processed df
     df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
