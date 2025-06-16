@@ -324,7 +324,7 @@ if __name__ == "__main__":
     print(f"total assets of identified for {cu['Total assets'].notna().sum()} out of {len(cu)} complaints filed to credit unions")
 
     others = df[~df['Company type'].isin(['bank', 'credit union'])]
-    others['Total assets'] = np.nan
+    others.loc[:,'Total assets'] = np.nan
     df = pd.concat([bank, cu, others], ignore_index=True)
 
     ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
@@ -337,6 +337,8 @@ if __name__ == "__main__":
 
     df['Total assets'] = pd.to_numeric(df['Total assets'], errors='coerce')
     df['Real total assets'] = df['Total assets']*mean_cpi_2013/df['Quarter sent end date'].apply(lambda x: cpi_dict[x[:-3]])
+    df['Log total assets'] = np.log(df['Total assets'])
+    df['Log real total assets'] = np.log(df['Real total assets'])
 
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
