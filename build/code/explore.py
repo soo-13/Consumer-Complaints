@@ -445,32 +445,97 @@ def plot_company_type(n):
         _plot_complaint_trend(mdf, quarter_index, axes[1], title_suffix=f"({state}-missingnarrative)", policy_date=policy_date)
         save_plot(fig, f'companytype-quarterly-{state}-narrative.png')
 
+def plot_real_assets(company_type):
+    ### plot quarterly trend of real assets for each company 
+    subset = df[df['Company type']==company_type]
+    grouped = (subset.groupby(['Company', 'Quarter sent']).agg(real_assets=('Log real total assets', 'mean')).reset_index())
+    
+    plt.figure(figsize=(14, 8))
+    for company, group in grouped.groupby('Company'):
+        plt.plot(group['Quarter sent'].dt.to_timestamp(), group['real_assets'], label=company, alpha=0.7)
+
+    plt.title(f'Quarterly Log Real Total Assets per Company - {company_type}')
+    plt.xlabel('Quarter')
+    plt.ylabel('Logarithm of Real Total Assets (2013 USD)')
+    plt.xticks(rotation=90)
+    plt.legend(title='Company', bbox_to_anchor=(1.05, 1),  loc='upper left')
+    plt.savefig(os.path.join(cPATH, 'temp', f'quarterly_real_assets_{company_type}.png'))
+
 def plot_complaints_and_response_per_size(company_type):
     subset = df[df['Company type']==company_type]
     subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
 
-    grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'),reliefs=('is_relief', 'sum'), total_assets=('Real total assets', 'mean')).reset_index())
+    grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'),reliefs=('is_relief', 'sum'), total_assets=('Log real total assets', 'mean')).reset_index())
     grouped['relief_rate'] = grouped['reliefs'] / grouped['complaints']
     print(f"total assets for {company_type} ranges between {grouped['total_assets'].min()} and {grouped['total_assets'].max()}")
+    print(f"{grouped['Company'].nunique()} unique companies included in the dataset")
+
+    ### quarterly-company level, x: total assets, y1: complaint counts, y2: relief probability, color: company (to approximately observe company effect)
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-    axes[0].scatter(grouped['total_assets'], grouped['complaints'], alpha=0.6)
+    sns.scatterplot(data=grouped, x='total_assets', y='complaints', hue='Company', palette='husl', legend=False, ax=axes[0], alpha=0.6)
     axes[0].set_ylabel('Complaints per quarter-company')
     axes[0].set_title(f'{company_type} - Complaints vs Total Assets')
 
-    axes[1].scatter(grouped['total_assets'], grouped['relief_rate'], alpha=0.6)
+    sns.scatterplot(data=grouped, x='total_assets', y='relief_rate', hue='Company', palette='husl', legend=False,ax=axes[1], alpha=0.6)
     axes[1].set_ylabel('Relief probability')
-    axes[1].set_xlabel('Total Assets')
-    axes[1].set_title(f'{company_type} - Relief Probability vs Total Assets')
+    axes[1].set_xlabel('Logarithm of total assets (in 2013 dollars)')
+    axes[1].set_title(f'{company_type} - Relief Probability vs Log Total Assets')
 
-    save_plot(fig, f'complaints_count_response_per_size_{company_type}.png')
+    save_plot(fig, f'per_size_company_quarterly_level_{company_type}.png')
+
+    ### company level, x: total assets, y1: complaint counts, y2: relief probability
+    # total assets aggregated through weighted mean on complaint counts - reflect how big the company is at the time when complaints were filed to the companies
+    company_sums = grouped.groupby('Company').agg(total_complaints=('complaints', 'sum'), total_reliefs=('reliefs', 'sum')).reset_index()
+    company_sums['relief_rate'] = company_sums['total_reliefs']/company_sums['total_complaints']
+
+    grouped['weighted_assets_num'] = grouped['total_assets'] * grouped['complaints']
+    weighted_assets_numerator = grouped.groupby('Company')['weighted_assets_num'].sum().reset_index()
+    company_grouped = company_sums.merge(weighted_assets_numerator, on='Company')
+    company_grouped['weighted_mean_assets'] = company_grouped['weighted_assets_num'] / company_grouped['total_complaints']
+    company_grouped = company_grouped.drop(columns=['weighted_assets_num'])
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    axes[0].scatter(company_grouped['weighted_mean_assets'], company_grouped['total_complaints'], alpha=0.7)
+    axes[0].set_ylabel('Total Complaint Counts')
+    axes[0].set_title(f'{company_type} - Total Complaint Counts vs Weighted Mean Total Assets (in 2013 dollars)')
+
+    axes[1].scatter(company_grouped['weighted_mean_assets'], company_grouped['relief_rate'], alpha=0.7)
+    axes[1].set_ylabel('Relief Probability')
+    axes[1].set_xlabel('Weighted Mean Total Assets')
+    axes[1].set_title(f'{company_type} - Relief Probability vs Weighted Mean Total Assets (in 2013 dollars)')
+
+    save_plot(fig, f'per_size_company_level_{company_type}.png')
+
+    ### company-quarterly level, left panels: zombie data related compalints, right panel: other complaints (same plot with previous one)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True)
+    zombie_title = {0: 'Other Complaints', 1: 'Zombie Data Complaints'}
+    for i in range(2):
+        subset = df[(df['Company type'] == company_type) & (df['Zombie data'] == i)]
+        subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
+        grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum'), total_assets=('Log real total assets', 'mean')).reset_index())
+        grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+
+        axes[0, i].scatter(grouped['total_assets'], grouped['complaints'], alpha=0.6)
+        axes[0, i].set_title(f"{company_type} | {zombie_title[i]} | Complaints Counts")
+        axes[0, i].set_ylabel('Complaints Counts (company-quarter level)')
+
+        axes[1, i].scatter(grouped['total_assets'], grouped['relief_rate'], alpha=0.6)
+        axes[1, i].set_title(f"{company_type} | {zombie_title[i]}| Relief Probability")
+        axes[1, i].set_ylabel('Relief probability (company-quarter level)')
+        axes[1, i].set_xlabel('Log total assets (in 2013 dollars)')
+
+        save_plot(fig, f'per_size_company_quarterly_level_zombie_{company_type}.png')
+        
 
 
 if __name__ == "__main__":
-    # load dataset
-    df = pd.read_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
+    ### load dataset
+    df = pd.read_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'), low_memory=False)
 
-    # set dtypes
+    ### set dtypes
     df['Date received'] = pd.to_datetime(df['Date received'])
     df['Date sent to company'] = pd.to_datetime(df['Date sent to company'])
     df['Consumer complaint narrative'] = df['Consumer complaint narrative'].astype('string')
@@ -481,7 +546,7 @@ if __name__ == "__main__":
     df['Year sent'] = df['Year sent'].astype('Int64')
     df['State privacy law'] = pd.to_datetime(df['State privacy law'])
 
-    # set orders of categorical variables with order 
+    ### set orders of categorical variables with order 
     duration_order = ['< 1 day', '1 day', '2 days', '3 days', '4 days', '5 days', '6 days', '7 days', 'within two weeks', 
                       'within a month', 'within 90 days', 'within 180 days', 'within a year', 'more than a year']
     df['Duration categorized'] = pd.Categorical(df['Duration categorized'], categories=duration_order, ordered=True)
@@ -491,15 +556,15 @@ if __name__ == "__main__":
     df['CCPA phase at receipt'] = pd.Categorical(df['CCPA phase at receipt'], categories=ccpa_order, ordered=False)
     df['CCPA phase at sent'] = pd.Categorical(df['CCPA phase at sent'], categories=ccpa_order, ordered=False)
 
-    # split data into complaints with/without narratives for exploratory analysis
+    ### split data into complaints with/without narratives for exploratory analysis
     subdf = df[df['With narrative']] # with narrative
     mssdf = df[~df['With narrative']] # missing narrative
 
-    # CCPA and CPRA
+    ### CCPA and CPRA
     CCPA_timeline = {'CCPA enactment': '2018-06-28', 'CCPA implementation': '2020-01-01', 'CPRA amendment': '2020-11-03', 'CPRA implementation': '2023-01-01'}
     CCPA_quarters = {label: pd.to_datetime(date).to_period('Q').strftime('%YQ%q') for label, date in CCPA_timeline.items()}
 
-    # state-quarterly level plots
+    ### state-quarterly level plots
     quarter_index = sorted(df['Quarter received'].unique())
     '''
     visualize_duration_categorized()
@@ -547,6 +612,8 @@ if __name__ == "__main__":
     plot_quarterly_companies_in_top_states(5)
     plot_company_type(5)
     '''
+    plot_real_assets('bank')
+    plot_real_assets('credit union')
     plot_complaints_and_response_per_size('bank')
     plot_complaints_and_response_per_size('credit union')
     print("exploratory analysis finished")
