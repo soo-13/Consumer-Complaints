@@ -445,6 +445,27 @@ def plot_company_type(n):
         _plot_complaint_trend(mdf, quarter_index, axes[1], title_suffix=f"({state}-missingnarrative)", policy_date=policy_date)
         save_plot(fig, f'companytype-quarterly-{state}-narrative.png')
 
+def plot_complaints_and_response_per_size(company_type):
+    subset = df[df['Company type']==company_type]
+    subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
+    grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'),reliefs=('is_relief', 'sum'), total_assets=('Real total assets', 'mean')).reset_index())
+    grouped['relief_rate'] = grouped['reliefs'] / grouped['complaints']
+    print(f"total assets for {company_type} ranges between {grouped['total_assets'].min()} and {grouped['total_assets'].max()}")
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    axes[0].scatter(grouped['total_assets'], grouped['complaints'], alpha=0.6)
+    axes[0].set_ylabel('Complaints per quarter-company')
+    axes[0].set_title(f'{company_type} - Complaints vs Total Assets')
+
+    axes[1].scatter(grouped['total_assets'], grouped['relief_rate'], alpha=0.6)
+    axes[1].set_ylabel('Relief probability')
+    axes[1].set_xlabel('Total Assets')
+    axes[1].set_title(f'{company_type} - Relief Probability vs Total Assets')
+
+    save_plot(fig, f'complaints_count_response_per_size_{company_type}.png')
+
+
 if __name__ == "__main__":
     # load dataset
     df = pd.read_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
@@ -524,7 +545,9 @@ if __name__ == "__main__":
         otab_prop.to_excel(writer, sheet_name='others proportion')
 
     plot_quarterly_companies_in_top_states(5)
-    '''
     plot_company_type(5)
+    '''
+    plot_complaints_and_response_per_size('bank')
+    plot_complaints_and_response_per_size('credit union')
     print("exploratory analysis finished")
     
