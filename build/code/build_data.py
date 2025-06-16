@@ -107,37 +107,40 @@ def read_cfpd_depository_institutions_list_excels(override=False):
     print(not_in_deduped_df.head())
     return deduped_renamed
 
-def get_nic_data():
-    nic_actv = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_ACTIVE.CSV')) # NIC dataset to obtain institution types
-    nic_clsd = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_CLOSED.CSV'))
-    nic_brnch = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_BRANCHES.CSV'))
-    nic_actv = nic_actv[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
-    nic_clsd = nic_clsd[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
-    nic_brnch = nic_brnch[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
-    nic = pd.concat([nic_actv, nic_clsd, nic_brnch])
-    nic['NM_LGL'] = nic['NM_LGL'].str.upper().str.strip()
+def get_nic_data(override=False):
+    if override or not os.path.exists(os.path.join(cPATH, 'temp', 'nic_combined.csv')):
+        nic_actv = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_ACTIVE.CSV')) # NIC dataset to obtain institution types
+        nic_clsd = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_CLOSED.CSV'))
+        nic_brnch = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_BRANCHES.CSV'))
+        nic_actv = nic_actv[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
+        nic_clsd = nic_clsd[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
+        nic_brnch = nic_brnch[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL']]
+        nic = pd.concat([nic_actv, nic_clsd, nic_brnch])
+        nic['NM_LGL'] = nic['NM_LGL'].str.upper().str.strip()
 
-    # create company type variable based on CHTR_TYPE_CD and ENTITY_TYPE
-    nic['Company type'] = 'others'
-    bank_ind = (nic['CHTR_TYPE_CD'].isin([200, 300, 320, 340]) |nic['ENTITY_TYPE'].isin(['SMB', 'DBR', 'NAT', 'NMB', 'ISB']))
-    cu_ind =  (nic['CHTR_TYPE_CD']==330) |nic['ENTITY_TYPE'].isin(['FCU', 'SCU']) # credit union
-    bhc_ind = (nic['ENTITY_TYPE'].isin(['BHC', 'FBH', 'BHC', 'FHD', 'SLHC'])) # bank/saving/loan holding companies
-    insur_ind = (nic['CHTR_TYPE_CD']==550) # insurance broker or agent and/or insurance company
-    sec_ind = (nic['CHTR_TYPE_CD']==700) # Securities Broker and/or Dealer
-    nic.loc[sec_ind, 'Company type'] = 'security related'
-    nic.loc[insur_ind, 'Company type'] = 'insurance related'
-    nic.loc[bhc_ind, 'Company type'] = 'bank holding company'
-    nic.loc[cu_ind, 'Company type'] = 'credit union'
-    nic.loc[bank_ind, 'Company type'] = 'bank'
+        # create company type variable based on CHTR_TYPE_CD and ENTITY_TYPE
+        nic['Company type'] = 'others'
+        bank_ind = (nic['CHTR_TYPE_CD'].isin([200, 300, 320, 340]) |nic['ENTITY_TYPE'].isin(['SMB', 'DBR', 'NAT', 'NMB', 'ISB']))
+        cu_ind =  (nic['CHTR_TYPE_CD']==330) |nic['ENTITY_TYPE'].isin(['FCU', 'SCU']) # credit union
+        bhc_ind = (nic['ENTITY_TYPE'].isin(['BHC', 'FBH', 'BHC', 'FHD', 'SLHC'])) # bank/saving/loan holding companies
+        insur_ind = (nic['CHTR_TYPE_CD']==550) # insurance broker or agent and/or insurance company
+        sec_ind = (nic['CHTR_TYPE_CD']==700) # Securities Broker and/or Dealer
+        nic.loc[sec_ind, 'Company type'] = 'security related'
+        nic.loc[insur_ind, 'Company type'] = 'insurance related'
+        nic.loc[bhc_ind, 'Company type'] = 'bank holding company'
+        nic.loc[cu_ind, 'Company type'] = 'credit union'
+        nic.loc[bank_ind, 'Company type'] = 'bank'
 
-    # if the same name falls into two or more category, apply the follwing priority
-    priority = {'bank': 1, 'credit union': 2, 'bank holding company':3, 'insurance related':4, 'security related': 5, 'others':6}
-    nic['type_priority'] = nic['Company type'].map(priority)
-    priority_combos = (nic.groupby('NM_LGL')['type_priority'].apply(lambda x: tuple(sorted(x.unique()))).reset_index(name='priority_combo'))
-    # print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'}))
+        # if the same name falls into two or more category, apply the follwing priority
+        priority = {'bank': 1, 'credit union': 2, 'bank holding company':3, 'insurance related':4, 'security related': 5, 'others':6}
+        nic['type_priority'] = nic['Company type'].map(priority)
+        priority_combos = (nic.groupby('NM_LGL')['type_priority'].apply(lambda x: tuple(sorted(x.unique()))).reset_index(name='priority_combo'))
+        print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'}))
+        nic.to_csv(os.path.join(cPATH, 'temp', 'nic_raw.csv'), index=False)
+    else:
+        nic = pd.read_csv(os.path.join(cPATH, 'temp', 'nic_combined.csv'))
+
     nic_dedup = nic.sort_values('type_priority', ascending=True).drop_duplicates(subset='NM_LGL', keep='first')
-
-    
     nic_dedup = nic_dedup.drop(['CHTR_TYPE_CD', 'ENTITY_TYPE', 'type_priority'], axis=1)
     nic_dedup = nic_dedup.drop_duplicates()
     return nic_dedup, nic
@@ -219,6 +222,9 @@ if __name__ == "__main__":
     df['Year received'] = df['Date received'].dt.year
     df['Quarter sent'] = df['Date sent to company'].dt.to_period('Q')
     df['Year sent'] = df['Date sent to company'].dt.year
+
+    # remove complaints sent to companies in 2025 Q2 (as the data was downloaded in the middle of 2025 Q2)
+    df = df[df['Quarter sent'] <= pd.Period('2025Q1')]
 
     # quantifies the time duration between receiving complaints and sending them to companies
     df['Duration sending'] = (df['Date sent to company'] - df['Date received']).dt.days # duration between receiving the complaints to sending the complaints to the company (in days)
@@ -320,6 +326,17 @@ if __name__ == "__main__":
     others = df[~df['Company type'].isin(['bank', 'credit union'])]
     others['Total assets'] = np.nan
     df = pd.concat([bank, cu, others], ignore_index=True)
+
+    ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
+    cpi_df = pd.read_csv(os.path.join(cPATH, 'input', 'CPIAUCSL.csv'))
+    cpi_df['observation_month'] = cpi_df['observation_date'].str[:-3] # convert to month to make matching easier
+    cpi_dict = cpi_df.set_index('observation_month')['CPIAUCSL'].to_dict() # convert to dictionary to make matching easier
+
+    cpi_2013 = cpi_df[cpi_df['observation_date'].str.startswith('2013')] # average CPI in 2013
+    mean_cpi_2013 = cpi_2013['CPIAUCSL'].mean()
+
+    df['Total assets'] = pd.to_numeric(df['Total assets'], errors='coerce')
+    df['Real total assets'] = df['Total assets']*mean_cpi_2013/df['Quarter sent end date'].apply(lambda x: cpi_dict[x[:-3]])
 
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
