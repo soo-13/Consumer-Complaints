@@ -152,8 +152,8 @@ def quarter_to_period_end(quarter_str):
     return f"{year}-{q_dict[q]}"
 
 def get_ffiec_data(path, override=False):
-    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'ffiec_combined.csv')):
-        ffiec_all = pd.read_csv(os.path.join(cPATH, 'temp', 'ffiec_combined.csv'))
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'ffiec_cdr_combined.csv')):
+        ffiec_all = pd.read_csv(os.path.join(cPATH, 'temp', 'ffiec_cdr_combined.csv'))
         return ffiec_all 
 
     all_files = glob.glob(os.path.join(path, '*', '*.txt'))
@@ -171,7 +171,7 @@ def get_ffiec_data(path, override=False):
     ffiec_all = pd.concat(ffiec_all, ignore_index=True)
     ffiec_all = ffiec_all.drop(0)
     ffiec_all.rename(columns={'RCFD2170': 'Total assets'}, inplace=True)
-    ffiec_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_combined.csv'), index=False)
+    ffiec_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_cdr_combined.csv'), index=False)
     return ffiec_all
 
 def get_ncua_data(path, override=False):
@@ -206,6 +206,34 @@ def get_ncua_data(path, override=False):
     ncua_all.to_csv(os.path.join(cPATH, 'temp', 'ncua_combined.csv'), index=False)
     return ncua_all
 
+def get_bhc_financial_data(path, override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'ffiec_bhcf_combined.csv')):
+        bhcf_all = pd.read_csv(os.path.join(cPATH, 'temp', 'ffiec_bhcf_combined.csv'))
+        return bhcf_all 
+
+    all_files = glob.glob(os.path.join(path, '*.txt'))
+    bhcf_all = []
+
+    for file in all_files:
+        try:
+            bhcf = pd.read_csv(file, delimiter='^', low_memory=False, on_bad_lines='warn')
+            bhcf = bhcf[['RSSD9001', 'RSSD9999', 'BHCK2170']]
+            bhcf_all.append(bhcf)
+        except:
+            try:
+                bhcf = pd.read_csv(file, delimiter='^', low_memory=False, encoding='cp1252', on_bad_lines='warn')
+                bhcf = bhcf[['RSSD9001', 'RSSD9999', 'BHCK2170']]
+                bhcf_all.append(bhcf)
+            except Exception as e:
+                print(f"Error reading {file}: {e}") # the ffiec txt files are divided in columns - it is normal that some files do not contain RCFD2170 column and are excluded from ffiec_all
+
+    bhcf_all = pd.concat(bhcf_all, ignore_index=True)
+    bhcf_all.rename(columns={'RSSD9001': 'RSSD ID', 'RSSD9999': 'bhcf report date', 'BHCK2170': 'Total assets'}, inplace=True)
+    bhcf_all['bhcf report date'] = pd.to_datetime(bhcf_all['bhcf report date'].astype(str),format='%Y%m%d').dt.strftime('%Y-%m-%d')
+
+    bhcf_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_bhcf_combined.csv'), index=False)
+    return bhcf_all
+
 if __name__ == "__main__":
     # basic statistics of the whole dataset
     df = pd.read_csv(os.path.join(cPATH, "input", "CFPD", "complaints.csv"))
@@ -225,6 +253,7 @@ if __name__ == "__main__":
 
     # remove complaints sent to companies in 2025 Q2 (as the data was downloaded in the middle of 2025 Q2)
     df = df[df['Quarter sent'] <= pd.Period('2025Q1')]
+    print(f"number of observations after removing complaints sent to companies in 2025 Q2 : {len(df)}")
 
     # quantifies the time duration between receiving complaints and sending them to companies
     df['Duration sending'] = (df['Date sent to company'] - df['Date received']).dt.days # duration between receiving the complaints to sending the complaints to the company (in days)
@@ -294,23 +323,30 @@ if __name__ == "__main__":
     credit_bureaus = ['EXPERIAN INFORMATION SOLUTIONS INC.', 'TRANSUNION INTERMEDIATE HOLDINGS, INC.', 'EQUIFAX, INC.']
     cb_ind = df['Company'].isin(credit_bureaus)
     df.loc[cb_ind, 'Company type'] = 'major credit bureaus'
-    df['Company type'] = df['Company type'].fillna('others')
 
+    # SCRA (specialized credit reporting agencies)
+    scra_df = pd.read_csv(os.path.join(cPATH, 'input', 'CFPD', 'cfpb-consumer-reporting-companies_list_2025.csv'), encoding='cp1252')
+    scra = scra_df['Company'].str.upper().tolist()
+    scra_ind = df['Company'].isin(scra)
+    df.loc[scra_ind, 'Company type'] = 'scra'
+    
     # data broker
     db = pd.read_excel(os.path.join(cPATH, 'input', 'Data_Broker_Full_Registry_2025.xlsx'))
     db['Name'] = db['Name'].str.upper().str.strip() 
     db_names = db['Name'].unique().tolist()
     db_ind = df['Company'].isin(db_names)
     df.loc[db_ind, 'Company type'] = 'data broker'
+
+    df['Company type'] = df['Company type'].fillna('others')
     print(df['Company type'].unique())
     print(df.groupby('Company type').count())
 
     ### financial institutions size (total assets)
     ## get asset information for banks
-    ffiec_path = os.path.join(cPATH, 'input', 'FFIEC')
+    ffiec_path = os.path.join(cPATH, 'input', 'FFIEC', 'CDR Call Reports')
     ffiec = get_ffiec_data(ffiec_path)
     df['Quarter sent end date'] = df['Quarter sent'].astype(str).apply(quarter_to_period_end) # calcuate end date of quarter when the complain was sent to the company for match purpose
-    
+
     bank = df[df['Company type']=='bank']
     bank = bank.merge(ffiec, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['IDRSSD', 'Reporting Period End Date']) # all banks have #ID_RSSD, so match with RSSD ID
     print(f"total assets identified for {bank['Total assets'].notna().sum()} out of {len(bank)} complaints filed to banks")
@@ -323,9 +359,19 @@ if __name__ == "__main__":
     cu = cu.merge(ncua, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['RSSD', 'CYCLE_DATE']) # all credit unions have #ID_RSSD, so match with RSSD ID
     print(f"total assets of identified for {cu['Total assets'].notna().sum()} out of {len(cu)} complaints filed to credit unions")
 
-    others = df[~df['Company type'].isin(['bank', 'credit union'])]
+    ## get asset information for bank holding companies
+    bhcf_path = os.path.join(cPATH, 'input', 'FFIEC', 'Holding Company Financial Data')
+    bhcf = get_bhc_financial_data(bhcf_path, override=True)
+
+    bhc = df[df['Company type']=='bank holding company']
+    bhc = bhc.merge(bhcf, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['RSSD ID', 'bhcf report date']) # all credit unions have #ID_RSSD, so match with RSSD ID
+    print(f"total assets of identified for {bhc['Total assets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
+    print(f"total assets for bank holding companies ranges between: {bhc['Total assets'].min()} to {bhc['Total assets'].max()}")
+
+    others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
     others.loc[:,'Total assets'] = np.nan
-    df = pd.concat([bank, cu, others], ignore_index=True)
+    df = pd.concat([bank, cu, bhc, others], ignore_index=True)
+
 
     ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
     cpi_df = pd.read_csv(os.path.join(cPATH, 'input', 'CPIAUCSL.csv'))
