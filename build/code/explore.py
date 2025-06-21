@@ -445,6 +445,41 @@ def plot_company_type(n):
         _plot_complaint_trend(mdf, quarter_index, axes[1], title_suffix=f"({state}-missingnarrative)", policy_date=policy_date)
         save_plot(fig, f'companytype-quarterly-{state}-narrative.png')
 
+def explore_total_assets():
+    for company_type in ['bank', 'credit union']:
+        subset = df[df['Company type']==company_type]
+        print(f"total assets of identified for {subset['Total assets'].notna().sum()} out of {len(subset)} complaints filed to {company_type}")
+        grouped = subset.groupby(['Quarter sent', 'Company']).agg(complaints=('Company', 'count'), assets=('Total assets', 'mean')).reset_index()
+        company_grouped = grouped.groupby(['Company']).agg(complaints=('complaints', 'sum')).reset_index()
+        print(f"{len(subset)} complaints filed to {company_type} were filed to {len(grouped)} unique {company_type}-quarter pairs for {len(company_grouped)} {company_type}")
+        print(f"out of {len(grouped)} {company_type}-quarter pairs, total assets info exists for {grouped['assets'].notna().sum()} company-quarter pairs")
+
+        company_nan_info = grouped.groupby('Company')['assets'].agg(total_quarters='size', non_nan_quarters='count').reset_index()
+        all_nan_companies = company_nan_info[company_nan_info['non_nan_quarters'] == 0]
+        print(f"Number of companies with all quarters having missing total assets: {len(all_nan_companies)}")
+        all_present_companies = company_nan_info[company_nan_info['non_nan_quarters'] == company_nan_info['total_quarters']]
+        print(f"Number of companies with total assets present for ALL quarters: {len(all_present_companies)}")
+
+
+        ### histogram of the number of quarters in which the complaints were sent to each company
+        quarters_per_company = grouped.groupby('Company').size()
+        counts = quarters_per_company.value_counts().sort_index()
+        plt.figure(figsize=(10, 6))
+        plt.bar(counts.index, counts.values, edgecolor='black')
+        plt.title('Distribution of number of quarters included in the dataset per company')
+        plt.xlabel('Number of quarters')
+        plt.ylabel('Number of companies')
+        plt.savefig(os.path.join(cPATH, 'temp', f'dist_quarters_per_company_{company_type}.png'))
+
+        ### histogram of the proportion of quarters with total assets information per company
+        company_nan_info['non_nan_ratio'] = company_nan_info['non_nan_quarters'] / company_nan_info['total_quarters']
+        plt.figure(figsize=(10, 6))
+        plt.hist(company_nan_info['non_nan_ratio'], bins=20, edgecolor='black')
+        plt.title('Histogram of ratio of quarters with total assets info')
+        plt.xlabel('Ratio of quarters with non-missing total assets')
+        plt.ylabel('Number of companies')
+        plt.savefig(os.path.join(cPATH, 'temp', f'hist_ratio_quarters_with_assets_per_company_{company_type}.png'))
+
 def plot_real_assets(company_type):
     ### plot quarterly trend of real assets for each company 
     subset = df[df['Company type']==company_type]
@@ -458,24 +493,28 @@ def plot_real_assets(company_type):
     plt.xlabel('Quarter')
     plt.ylabel('Logarithm of Real Total Assets (2013 USD)')
     plt.xticks(rotation=90)
-    plt.legend(title='Company', bbox_to_anchor=(1.05, 1),  loc='upper left')
     plt.savefig(os.path.join(cPATH, 'temp', f'quarterly_real_assets_{company_type}.png'))
 
-def plot_complaints_and_response_per_size(company_type):
+    company_means = subset.groupby('Company')['Log real total assets'].mean().reset_index(name='mean_log_assets').sort_values('mean_log_assets', ascending=False)
+    print(f"Company order by mean log real assets ({company_type}):")
+    print(company_means)
+
+def plot_complaints_and_response_per_size_company_quarter_level(company_type):
     subset = df[df['Company type']==company_type]
     subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
 
     grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'),reliefs=('is_relief', 'sum'), total_assets=('Log real total assets', 'mean')).reset_index())
     grouped['relief_rate'] = grouped['reliefs'] / grouped['complaints']
+    grouped['log_complaints'] = np.log1p(grouped['complaints'])
     print(f"total assets for {company_type} ranges between {grouped['total_assets'].min()} and {grouped['total_assets'].max()}")
     print(f"{grouped['Company'].nunique()} unique companies included in the dataset")
 
-    ### quarterly-company level, x: total assets, y1: complaint counts, y2: relief probability, color: company (to approximately observe company effect)
+    ### x: total assets, y1: complaint counts, y2: relief probability, color: company (to approximately observe company effect)
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-    sns.scatterplot(data=grouped, x='total_assets', y='complaints', hue='Company', palette='husl', legend=False, ax=axes[0], alpha=0.6)
-    axes[0].set_ylabel('Complaints per quarter-company')
-    axes[0].set_title(f'{company_type} - Complaints vs Total Assets')
+    sns.scatterplot(data=grouped, x='total_assets', y='log_complaints', hue='Company', palette='husl', legend=False, ax=axes[0], alpha=0.6)
+    axes[0].set_ylabel('Log complaint counts per quarter-company')
+    axes[0].set_title(f'{company_type} - Log Complaint Counts vs Log Total Assets')
 
     sns.scatterplot(data=grouped, x='total_assets', y='relief_rate', hue='Company', palette='husl', legend=False,ax=axes[1], alpha=0.6)
     axes[1].set_ylabel('Relief probability')
@@ -484,31 +523,7 @@ def plot_complaints_and_response_per_size(company_type):
 
     save_plot(fig, f'per_size_company_quarterly_level_{company_type}.png')
 
-    ### company level, x: total assets, y1: complaint counts, y2: relief probability
-    # total assets aggregated through weighted mean on complaint counts - reflect how big the company is at the time when complaints were filed to the companies
-    company_sums = grouped.groupby('Company').agg(total_complaints=('complaints', 'sum'), total_reliefs=('reliefs', 'sum')).reset_index()
-    company_sums['relief_rate'] = company_sums['total_reliefs']/company_sums['total_complaints']
-
-    grouped['weighted_assets_num'] = grouped['total_assets'] * grouped['complaints']
-    weighted_assets_numerator = grouped.groupby('Company')['weighted_assets_num'].sum().reset_index()
-    company_grouped = company_sums.merge(weighted_assets_numerator, on='Company')
-    company_grouped['weighted_mean_assets'] = company_grouped['weighted_assets_num'] / company_grouped['total_complaints']
-    company_grouped = company_grouped.drop(columns=['weighted_assets_num'])
-
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    axes[0].scatter(company_grouped['weighted_mean_assets'], company_grouped['total_complaints'], alpha=0.7)
-    axes[0].set_ylabel('Total Complaint Counts')
-    axes[0].set_title(f'{company_type} - Total Complaint Counts vs Weighted Mean Total Assets (in 2013 dollars)')
-
-    axes[1].scatter(company_grouped['weighted_mean_assets'], company_grouped['relief_rate'], alpha=0.7)
-    axes[1].set_ylabel('Relief Probability')
-    axes[1].set_xlabel('Weighted Mean Total Assets')
-    axes[1].set_title(f'{company_type} - Relief Probability vs Weighted Mean Total Assets (in 2013 dollars)')
-
-    save_plot(fig, f'per_size_company_level_{company_type}.png')
-
-    ### company-quarterly level, left panels: zombie data related compalints, right panel: other complaints (same plot with previous one)
+    ### left panels: zombie data related compalints, right panel: other complaints (same plot with previous one)
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True)
     zombie_title = {0: 'Other Complaints', 1: 'Zombie Data Complaints'}
     for i in range(2):
@@ -517,20 +532,138 @@ def plot_complaints_and_response_per_size(company_type):
 
         grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum'), total_assets=('Log real total assets', 'mean')).reset_index())
         grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+        grouped['log_complaints'] = np.log1p(grouped['complaints'])
 
-        axes[0, i].scatter(grouped['total_assets'], grouped['complaints'], alpha=0.6)
-        axes[0, i].set_title(f"{company_type} | {zombie_title[i]} | Complaints Counts")
-        axes[0, i].set_ylabel('Complaints Counts (company-quarter level)')
+        sns.scatterplot(data=grouped, x='total_assets', y='log_complaints', hue='Company', palette='husl', alpha=0.6, ax=axes[0, i], legend=False)
+        axes[0, i].set_title(f"{company_type} | {zombie_title[i]} | Log Complaints Counts")
+        axes[0, i].set_ylabel('Log Complaints Counts (company-quarter level)')
 
-        axes[1, i].scatter(grouped['total_assets'], grouped['relief_rate'], alpha=0.6)
+        sns.scatterplot(data=grouped, x='total_assets', y='relief_rate', hue='Company', palette='husl', alpha=0.6, ax=axes[1, i], legend=False)
         axes[1, i].set_title(f"{company_type} | {zombie_title[i]}| Relief Probability")
         axes[1, i].set_ylabel('Relief probability (company-quarter level)')
         axes[1, i].set_xlabel('Log total assets (in 2013 dollars)')
 
         save_plot(fig, f'per_size_company_quarterly_level_zombie_{company_type}.png')
+
+def plot_complaints_and_response_per_size_company_level():    
+    ### company level, x: total assets, y1: complaint counts, y2: relief probability
+    # total assets aggregated through taking average across quarters
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    palette = {'bank': 'blue', 'credit union': 'orange'}
+    for company_type in ['bank', 'credit union']:
+        subset = df[df['Company type']==company_type]
+        subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+        grouped = subset.groupby(['Company']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum'), assets=('Log real total assets', 'mean')).reset_index()
+        grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+        grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+        sns.scatterplot(data=grouped, x='assets', y='log_complaints', hue=[company_type] * len(grouped), palette=[palette[company_type]], legend=True, ax=axes[0], alpha=0.6)
+        sns.scatterplot(data=grouped, x='assets', y='relief_rate', hue=[company_type] * len(grouped), palette=[palette[company_type]], legend=True, ax=axes[1], alpha=0.6)
+
+    axes[0].set_ylabel('Log complaint counts per company')
+    axes[0].set_title('Log Complaint Counts vs Log Total Assets')
+
+    axes[1].set_ylabel('Relief probability')
+    axes[1].set_xlabel('Logarithm of Total Assets (in 2013 dollars)')
+    axes[1].set_title(f'Relief Probability vs Log Total Assets')
+
+    save_plot(fig, 'per_size_company_level.png')  
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True) 
+    zombie_title = {0: 'Other Complaints', 1: 'Zombie Data Complaints'}
+    for i in range(2):
+        for company_type in ['bank', 'credit union']:
+            subset = df[(df['Company type']==company_type) &  (df['Zombie data']==i)]
+            subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
+            grouped = subset.groupby(['Company']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum'), assets=('Log real total assets', 'mean')).reset_index()
+            grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+            grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+            sns.scatterplot(data=grouped, x='assets', y='log_complaints', hue=[company_type] * len(grouped), palette=[palette[company_type]], legend=True, ax=axes[0,i], alpha=0.6)
+            sns.scatterplot(data=grouped, x='assets', y='relief_rate', hue=[company_type] * len(grouped), palette=[palette[company_type]], legend=True, ax=axes[1,i], alpha=0.6)
         
+            axes[0, i].set_title(f"{zombie_title[i]} | Log Complaints Counts vs. Log Total Assets (in 2013 Dollars)")
+            axes[1, i].set_title(f"{zombie_title[i]} | Relief Probability vs. Log Total Assets (in 2013 Dollars)")
+            axes[0, i].set_ylabel('Log complaint counts(company-quarter level)')
+            axes[1, i].set_ylabel('Relief probability (company-quarter level)')
+        axes[1, 0].set_xlabel('Logarithm of Total Assets (in 2013 dollars)')
+        axes[1, 1].set_xlabel('Logarithm of Total Assets (in 2013 dollars)')
+    save_plot(fig, 'per_size_company_level_zombie.png')  
 
+def plot_response_per_complaint_count_company_quarterly_level():
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for i, company_type in enumerate(['bank', 'credit union']):
+        subset = df[df['Company type']==company_type]
+        subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
 
+        grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'),reliefs=('is_relief', 'sum')).reset_index())
+        grouped['relief_rate'] = grouped['reliefs'] / grouped['complaints']
+        grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+        ### x: complaint counts, y2: relief probability, color: company (to approximately observe company effect)
+        sns.scatterplot(data=grouped, x='log_complaints', y='relief_rate', hue='Company', palette='husl', legend=False, ax=axes[i], alpha=0.6)
+
+        axes[i].set_ylabel('Relief probability per quarter-company')
+        axes[i].set_title(f'{company_type} - Log Complaint Counts vs Relief probability')
+
+    axes[1].set_xlabel('Logarithm of Complaint Counts')
+    save_plot(fig, 'relief_per_complaints_company_quarterly_level.png')
+
+    ### left panels: other compalints, right panel: zombie related complaints (same plot with previous one)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True)
+    zombie_title = {0: 'Other Complaints', 1: 'Zombie Data Complaints'}
+    for i in range(2):
+        for j, company_type in enumerate(['bank', 'credit union']):
+            subset = df[(df['Company type'] == company_type) & (df['Zombie data'] == i)]
+            subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
+            grouped = (subset.groupby(['Company', 'Quarter sent']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum')).reset_index())
+            grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+            grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+            sns.scatterplot(data=grouped, x='log_complaints', y='relief_rate', hue='Company', palette='husl', alpha=0.6, ax=axes[i, j], legend=False)
+            axes[i, j].set_title(f"{company_type} | {zombie_title[i]} | Log Complaints Counts vs. Relief Probability")
+            axes[i, j].set_ylabel('Relief probability (company-quarter level)')
+            axes[1, j].set_xlabel('Log complaint counts')
+
+        save_plot(fig, 'relief_per_complaints_company_quarterly_level_zombie.png')
+
+def plot_response_per_complaint_count():
+    fig, ax = plt.subplots(1, 1, figsize=(14, 8), sharex=True)
+
+    subset = df[df['Company type'].isin(['bank', 'credit union', 'bank holding company', 'data broker', 'major credit bureaus'])]
+    subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+    grouped = subset.groupby(['Company', 'Company type']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum')).reset_index()
+    grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+    grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+    sns.scatterplot(data=grouped, x='log_complaints', y='relief_rate', hue='Company type', palette='husl', legend=True, alpha=0.6)
+
+    ax.set_ylabel('Relief probability per company')
+    ax.set_title('Log Complaint Counts vs Relief probability')
+    ax.set_xlabel('Logarithm of complaint counts')
+    save_plot(fig, 'relief_per_complaints_company_level.png')  
+
+    ### left panel: other complaints, right panel: zombie data complaints
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True) 
+    zombie_title = {0: 'Other Complaints', 1: 'Zombie Data Complaints'}
+    for i in range(2):
+        subset = df[(df['Company type'].isin(['bank', 'credit union', 'bank holding company', 'data broker', 'major credit bureaus', 'scra'])) &  (df['Zombie data']==i)]
+        subset['is_relief'] = subset['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
+        grouped = subset.groupby(['Company', 'Company type']).agg(complaints=('Company', 'count'), reliefs=('is_relief', 'sum')).reset_index()
+        grouped['relief_rate'] = grouped['reliefs']/grouped['complaints']
+        grouped['log_complaints'] = np.log1p(grouped['complaints'])
+
+        sns.scatterplot(data=grouped, x='log_complaints', y='relief_rate', hue='Company type', palette='colorblind', legend=True, ax=axes[i], alpha=0.6)
+
+        axes[i].set_title(f"{zombie_title[i]} | Log Complaints Counts vs. Relief Probability")
+        axes[i].set_ylabel('Relief probability (company-quarter level)')
+    axes[1].set_xlabel('Log complaint counts(company-quarter level)')
+    save_plot(fig, 'relief_per_complaints_company_level_zombie.png')  
+    
 if __name__ == "__main__":
     ### load dataset
     df = pd.read_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'), low_memory=False)
@@ -612,9 +745,14 @@ if __name__ == "__main__":
     plot_quarterly_companies_in_top_states(5)
     plot_company_type(5)
     '''
+    explore_total_assets()
     plot_real_assets('bank')
     plot_real_assets('credit union')
-    plot_complaints_and_response_per_size('bank')
-    plot_complaints_and_response_per_size('credit union')
+
+    plot_complaints_and_response_per_size_company_quarter_level('bank')
+    plot_complaints_and_response_per_size_company_quarter_level('credit union')
+    plot_complaints_and_response_per_size_company_level()
+    plot_response_per_complaint_count_company_quarterly_level()
+    plot_response_per_complaint_count()
     print("exploratory analysis finished")
     
