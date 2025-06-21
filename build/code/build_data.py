@@ -255,6 +255,9 @@ if __name__ == "__main__":
     df = df[df['Quarter sent'] <= pd.Period('2025Q1')]
     print(f"number of observations after removing complaints sent to companies in 2025 Q2 : {len(df)}")
 
+    # binary indicator of receiving monetary or non-monetary relief
+    df['Is relief'] = df['Company response to consumer'].isin(['Closed with non-monetary relief','Closed with monetary relief'])
+
     # quantifies the time duration between receiving complaints and sending them to companies
     df['Duration sending'] = (df['Date sent to company'] - df['Date received']).dt.days # duration between receiving the complaints to sending the complaints to the company (in days)
     df['Duration categorized'] = df['Duration sending'].apply(categorize_duration) 
@@ -371,7 +374,6 @@ if __name__ == "__main__":
     others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
     others.loc[:,'Total assets'] = np.nan
     df = pd.concat([bank, cu, bhc, others], ignore_index=True)
-
 
     ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
     cpi_df = pd.read_csv(os.path.join(cPATH, 'input', 'CPIAUCSL.csv'))
