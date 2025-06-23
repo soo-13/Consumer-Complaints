@@ -171,6 +171,8 @@ def get_ffiec_data(path, override=False):
     ffiec_all = pd.concat(ffiec_all, ignore_index=True)
     ffiec_all = ffiec_all.drop(0)
     ffiec_all.rename(columns={'RCFD2170': 'Total assets'}, inplace=True)
+    ffiec_all['Total assets'] = pd.to_numeric(ffiec_all['Total assets'], errors='coerce')
+    ffiec_all['Total assets'] = ffiec_all['Total assets']*1000 # total assets in ffiec form 031, 041 are reported in thousands
     ffiec_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_cdr_combined.csv'), index=False)
     return ffiec_all
 
@@ -229,6 +231,7 @@ def get_bhc_financial_data(path, override=False):
 
     bhcf_all = pd.concat(bhcf_all, ignore_index=True)
     bhcf_all.rename(columns={'RSSD9001': 'RSSD ID', 'RSSD9999': 'bhcf report date', 'BHCK2170': 'Total assets'}, inplace=True)
+    bhcf_all['Total assets'] = bhcf_all['Total assets']*1000 # BHCK2170 is reported in 1,000 dollars
     bhcf_all['bhcf report date'] = pd.to_datetime(bhcf_all['bhcf report date'].astype(str),format='%Y%m%d').dt.strftime('%Y-%m-%d')
 
     bhcf_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_bhcf_combined.csv'), index=False)
@@ -344,10 +347,10 @@ if __name__ == "__main__":
     print(df['Company type'].unique())
     print(df.groupby('Company type').count())
 
-    ### financial institutions size (total assets)
+    ### financial institutions size (total assets in dollars)
     ## get asset information for banks
     ffiec_path = os.path.join(cPATH, 'input', 'FFIEC', 'CDR Call Reports')
-    ffiec = get_ffiec_data(ffiec_path)
+    ffiec = get_ffiec_data(ffiec_path, override=True)
     df['Quarter sent end date'] = df['Quarter sent'].astype(str).apply(quarter_to_period_end) # calcuate end date of quarter when the complain was sent to the company for match purpose
 
     bank = df[df['Company type']=='bank']
