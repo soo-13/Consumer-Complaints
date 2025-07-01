@@ -3,6 +3,8 @@ import itertools
 import os
 import numpy as np
 import pandas as pd
+from collections import defaultdict, deque
+
 
 cPATH = os.path.join("/Users", "yeonsoo","Dropbox (MIT)", "Projects", "consumer_complaints", "build")
 
@@ -276,59 +278,65 @@ def get_bhc_financial_data(path, override=False):
     bhcf_all.to_csv(os.path.join(cPATH, 'temp', 'ffiec_bhcf_combined.csv'), index=False)
     return bhcf_all
 
+def _find_all_bank_offspring(rel_q, parent, results, visited):
+    if parent in visited:
+        return
+
+    visited.add(parent)
+    bank_off = rel_q[(rel_q['#ID_RSSD_PARENT'] == parent) & (rel_q['Company type']=='bank')]
+    bhc_off = rel_q[(rel_q['#ID_RSSD_PARENT'] == parent) & (rel_q['Company type']=='bank holding company')]
+
+    if not bank_off.empty:
+        results.append(bank_off)
+
+    if not bhc_off.empty:
+        for offspring in bhc_off['ID_RSSD_OFFSPRING'].unique():
+            _find_all_bank_offspring(rel_q, offspring, results, visited)
+    
+def find_all_bank_offspring(nic, relationships, override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'bhc_bank_offsprings.csv')):
+        results = pd.read_csv(os.path.join(cPATH, 'temp', 'bhc_bank_offsprings.csv'))
+        return results
+
+    quarters = pd.date_range(start='2010-01-01', end='2025-06-30', freq='QE')
+    result_rows = []
+
+    for quarter in quarters:
+        rel_q = relationships[(relationships['D_DT_START'] <= quarter) & (relationships['D_DT_END'] >= quarter)][['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING']]
+        nic_q = nic[nic['quarter'] == quarter][['#ID_RSSD', 'Company type', 'quarter']]
+        rel_q = rel_q.merge(nic_q, left_on='ID_RSSD_OFFSPRING', right_on='#ID_RSSD', how='left')
+        rel_q.drop(columns=['#ID_RSSD'], inplace=True)
+        rel_q = rel_q[rel_q['Company type'].notna()] # xclude entities without an RSSD ID, since they are likely unregulated and outside the scope of our analysis.
+
+        for parent in rel_q['#ID_RSSD_PARENT'].unique():
+            _find_all_bank_offspring(rel_q, parent, result_rows, set())
+    results = pd.concat(result_rows, ignore_index=True)
+    results.to_csv(os.path.join(cPATH, 'temp', 'bhc_bank_offsprings.csv'))
+    return results
+
 def bank_total_assets_in_bhc(nic, ffiec_crp): # get sum of total assets for child banks in bhc (total assets of bhc held by banks)
     relationships = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_RELATIONSHIPS.CSV'))
-    relationships = relationships[relationships['RELN_LVL'].isin([1, 2])] # include direct and indirect relationships
+    relationships = relationships[relationships['RELN_LVL']==1] # direct relationships only
     relationships['D_DT_START'] = pd.to_datetime(relationships['D_DT_START']) # change dtypes for comparison later on
     relationships['D_DT_END'] = pd.to_datetime(relationships['D_DT_END'], errors='coerce') # 12/13/9999, which indicates on-going relationships causes error -> fill with nan in that case
     relationships['D_DT_END'].fillna(pd.Timestamp('2262-04-11'), inplace=True)  # change nans into upper bound of datetime64[ns] (2262-04-11)
 
-    # Merge with NIC dataset and FFIEC call reports to get Company type and Total assets
-    nic = nic.drop(['D_DT_START', 'D_DT_END'], axis=1)
-    child = ffiec_crp.merge(nic, left_on='IDRSSD', right_on='#ID_RSSD', how='left') 
-    merged = child.merge(relationships[['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'D_DT_START', 'D_DT_END']], left_on='#ID_RSSD', right_on='ID_RSSD_OFFSPRING', how='inner') 
-    print("After merging:", merged.shape)
-    
-    #keep only observations where 'Reporting Period End Date' is between D_DT_START and D_DT_END
-    merged['Reporting Period End Date'] = pd.to_datetime(merged['Reporting Period End Date']) # change dtypes for comparison
-    valid_date = (merged['Reporting Period End Date'] >= merged['D_DT_START']) & (merged['Reporting Period End Date'] <= merged['D_DT_END'])
-    merged = merged[valid_date]
-    print("After filtering out invalid date:", merged.shape)
+    bank_offsprings = find_all_bank_offspring(nic, relationships) 
+    bank_offsprings.drop('Company type', axis=1, inplace=True)
+    bank_offsprings = bank_offsprings.drop_duplicates() 
 
-    ## total number of offsprings (parent-quarterly)
-    quarters = pd.date_range(start='2010-01-01', end='2025-06-30', freq='QE') # create all quarters of our interest
-
-    # cross-join relationships to get total 
-    relationships['key'] = 1
-    quarters_df = pd.DataFrame({'quarter': quarters})
-    quarters_df['key'] = 1
-    rel_cross = relationships.merge(quarters_df, on='key', how='left')
-    rel_cross.drop(columns='key', inplace=True)
-
-    rel_cross = rel_cross[(rel_cross['quarter'] >= rel_cross['D_DT_START']) &(rel_cross['quarter'] <= rel_cross['D_DT_END'])] # filter out invalid dates
-    total_offspring = rel_cross.groupby(['#ID_RSSD_PARENT', 'quarter'])['ID_RSSD_OFFSPRING'].nunique().reset_index(name='TotalOffspringCount') 
-    
-    # filter out non-banks
-    is_bank = (merged['Company type']=='bank')
-    merged = merged[is_bank]
-    print("After filtering out non-banks", merged.shape)
-
-    # Remove duplicates (to avoid double-counting)
-    merged = merged.drop_duplicates(subset=['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'Reporting Period End Date'])
-    print("After removing dupplicates:", merged.shape)
+    # merge with ffiec call reports dataset to get total assets of each bank subsidiaries
+    bank_offsprings['quarter'] = bank_offsprings['quarter'].astype(str)
+    merged = bank_offsprings.merge(ffiec_crp, left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['IDRSSD', 'Reporting Period End Date'], how='left')
+    print(f"total assets info exists for {len(merged[merged['Total assets'].notna()])} out of {len(merged)} offsprings")
 
     # Aggregate total assets of banks under each BHC per quarter
     # BankCount: Number of subsidiaries with non-missing total assets
     # BankTotal: Sum of total assets across subsidiaries (returns NaN if all values are NaN)
     # BankCountNanIncluded: Total number of subsidiaries (including those with NaN total assets)
     grouped = merged.groupby(['#ID_RSSD_PARENT', 'Reporting Period End Date'])
-    bhc_assets = grouped['Total assets'].agg(BankCount='count', BankTotal=lambda x: x.sum(min_count=1), BankCountNanIncluded='size').reset_index()
-    bhc_assets = bhc_assets.rename(columns={'BankTotal': 'Sum_Bank_TotalAssets'})
-
-    bhc_assets = bhc_assets.merge(total_offspring, left_on=['#ID_RSSD_PARENT', 'Reporting Period End Date'], right_on=['#ID_RSSD_PARENT', 'quarter'], how='outer')
-    bhc_assets['Reporting Period End Date'] = bhc_assets['Reporting Period End Date'].dt.strftime('%Y-%m-%d')
-    bhc_assets['BankCount'].fillna(0)
-    bhc_assets['BankCountNanIncluded'].fillna(0)
+    bhc_assets = grouped['Total assets'].agg(BankCount='count', BankAssets=lambda x: x.sum(min_count=1), BankCountNanIncluded='size').reset_index()
+    print(f"sum of bank assets identified for {len(merged)} out of {len(bhc_assets)} parent-quarter pairs")
     return bhc_assets
 
 
@@ -425,7 +433,7 @@ if __name__ == "__main__":
     ### financial institutions size (total assets in dollars)
     ## get asset information for banks
     ffiec_path = os.path.join(cPATH, 'input', 'FFIEC', 'CDR Call Reports')
-    ffiec = get_ffiec_data(ffiec_path, override=True)
+    ffiec = get_ffiec_data(ffiec_path)
     df['Quarter sent end date'] = df['Quarter sent'].astype(str).apply(quarter_to_period_end) # calcuate end date of quarter when the complain was sent to the company for match purpose
 
     # all institutes in ffiec dataset are classified as banks
@@ -454,11 +462,11 @@ if __name__ == "__main__":
 
     print(f"bhc total assets identified for {bhc['Total assets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
     print(f"bhc total assets ranges between: {bhc['Total assets'].min()} to {bhc['Total assets'].max()}")
-    print(f"bhc total assets held by banks identified for {bhc['Sum_Bank_TotalAssets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
-    print(f"bhc total assets held by banks ranges between: {bhc['Sum_Bank_TotalAssets'].min()} to {bhc['Sum_Bank_TotalAssets'].max()}")
+    print(f"bhc total assets held by banks identified for {bhc['BankAssets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
+    print(f"bhc total assets held by banks ranges between: {bhc['BankAssets'].min()} to {bhc['BankAssets'].max()}")
 
     bhc.to_csv(os.path.join(cPATH,  'temp', 'bhc_assets.csv')) # save to compare bhc total assets vs. bhc total assets held by banks
-    bhc.drop(['quarter_x', 'quarter_y', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankCount', 'Sum_Bank_TotalAssets', 'BankCountNanIncluded', 'TotalOffspringCount'], axis=1, inplace=True)
+    bhc.drop(['quarter', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankCount', 'BankAssets', 'BankCountNanIncluded'], axis=1, inplace=True)
 
     others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
     others.loc[:,'Total assets'] = np.nan
