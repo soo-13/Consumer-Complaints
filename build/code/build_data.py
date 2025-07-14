@@ -168,14 +168,23 @@ def get_nic_data(override=False):
     nic_dedup = nic_dedup.drop(['CHTR_TYPE_CD', 'ENTITY_TYPE', 'type_priority', 'D_DT_START', 'D_DT_END'], axis=1)
     nic_dedup = nic_dedup.drop_duplicates()
 
-    # impute missing quarters with the nearest quarter info
+    # name-quarter level to match with institution name impute missing quarters with the nearest quarter info
     complete = nic_cross[['NM_LGL', 'quarter']].copy()
     nic_complete = complete.merge(nic_dedup, on=['NM_LGL', 'quarter'], how='left')
     nic_complete.sort_values(['NM_LGL', 'quarter'], inplace=True)
+
+    # rssd id-quarter level to match with rssd id 
+    complete_id = nic_cross[['#ID_RSSD', 'quarter']].copy()
+    nic_id_complete = complete_id.merge(nic_valid, on=['#ID_RSSD', 'quarter'], how='left')
+
+    # impute missing quarters with the nearest quarter info
     nic_complete.update(nic_complete.groupby('NM_LGL').ffill())
     nic_complete.update(nic_complete.groupby('NM_LGL').bfill())
+    nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').ffill())
+    nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').bfill())
 
-    return nic_complete, nic_valid
+
+    return nic_complete, nic_id_complete
 
 def quarter_to_period_end(quarter_str):
     year = int(quarter_str[:4])
@@ -295,14 +304,12 @@ def bank_total_assets_in_bhc(nic, ffiec_crp): # get sum of total assets for chil
 
     rel_valid = rel_cross[(rel_cross['quarter'] >= rel_cross['D_DT_START']) &(rel_cross['quarter'] <= rel_cross['D_DT_END'])] # filter out invalid dates
     rel_valid.drop(['D_DT_START', 'D_DT_END'], axis=1, inplace=True)
-
     # Merge with NIC dataset and FFIEC call reports to get Company type and Total assets
     nic.drop(['D_DT_START', 'D_DT_END'], axis=1, inplace=True)
     ffiec_crp['Reporting Period End Date'] = pd.to_datetime(ffiec_crp['Reporting Period End Date'])
     rel_valid = rel_valid.merge(nic[['#ID_RSSD', 'Company type', 'quarter']], left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['#ID_RSSD', 'quarter'], how='left') # get company type of offspring
     merged = rel_valid.merge(ffiec_crp, left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['IDRSSD', 'Reporting Period End Date'], how='left')
     print("parent-subsidiary relationships, quarterly level", merged.shape)
-
     # filter out non-banks & remove duplicates 
     is_bank = (merged['Company type']=='bank')
     merged = merged[is_bank]
@@ -378,7 +385,7 @@ if __name__ == "__main__":
     df["With narrative"] = df["Consumer complaint narrative"].notna()
 
     ### Getting RSSD ID & institution type
-    nic, nic_raw = get_nic_data()
+    nic, nic_raw = get_nic_data(override=True)
     nic['quarter'] = nic['quarter'].dt.to_period('Q')
     df = df.merge(nic, how='left', left_on=['Company', 'Quarter sent'], right_on=['NM_LGL', 'quarter'])
 
@@ -445,7 +452,18 @@ if __name__ == "__main__":
     print(f"bhc total assets held by banks ranges between: {bhc['BankAssets'].min()} to {bhc['BankAssets'].max()}")
 
     bhc.to_csv(os.path.join(cPATH,  'temp', 'bhc_assets.csv')) # save to compare bhc total assets vs. bhc total assets held by banks
-    bhc.drop(['quarter', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankCount', 'BankAssets'], axis=1, inplace=True)
+
+    # adjust total assets based on exploratory analysis of BankAssets and TotalAssets
+    # we use BankAssets as our default measure of total assets for bhcs since it better reflects each institution's capability regarding its banking system
+    # when AssetsRatio < 0.3, bank subsidiaries are not properly matched, resulting in big discrepancy between Total assets & BankAssets -> better use Total assets
+    bhc['AssetsRatio'] = bhc['BankAssets'] / bhc['Total assets']    
+    bhc.rename(columns={'Total assets': 'BhcAssets', 'BankAssets': 'Total assets'}, inplace=True)
+    use_bhc_assets = bhc[bhc['AssetsRatio']<0.3] 
+    bhc.loc[use_bhc_assets.index, 'Total assets'] = bhc.loc[use_bhc_assets.index, 'BhcAssets']
+
+    bhc.drop(['quarter', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankCount', 'BhcAssets'], axis=1, inplace=True)
+    print(f"final bhc total assets identified for {bhc['Total assets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
+    print(f"final bhc total assets ranges between: {bhc['Total assets'].min()} to {bhc['Total assets'].max()}")
 
     others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
     others.loc[:,'Total assets'] = np.nan
