@@ -13,6 +13,7 @@ echo $SCRIPT_DIR
 
 SRC_DIR="$(cd "$SCRIPT_DIR/../output" && pwd)"
 DST_DIR="$(cd "$SCRIPT_DIR/../../../../Apps/Overleaf/Consumer-Complaints/build-output" && pwd)"
+ANLS_DIR="$(cd "$SCRIPT_DIR/../../analysis/input" && pwd)"
 echo $SRC_DIR
 echo $DST_DIR
 
@@ -20,4 +21,10 @@ EXTENSIONS="pdf png jpg"
 
 for ext in $EXTENSIONS; do
     cp "$SRC_DIR"/*.$ext "$DST_DIR"/
+done
+
+EXTENSIONS="csv xlsx json"
+
+for ext in $EXTENSIONS; do
+    cp "$SRC_DIR"/*.$ext "$ANLS_DIR"/
 done
