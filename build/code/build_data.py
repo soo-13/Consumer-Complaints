@@ -1,9 +1,10 @@
 import glob
 import itertools
 import os
+import re
 import numpy as np
 import pandas as pd
-from collections import defaultdict, deque
+from datetime import date
 
 
 cPATH = os.path.join("/Users", "yeonsoo","Dropbox (MIT)", "Projects", "consumer_complaints", "build")
@@ -57,6 +58,20 @@ def state_privacy_law_implementation(state): # implementation date of CCPA is us
                            }
     return implementation_date.get(state, None)
 
+def extract_date_parts(text):
+    digits = ''.join(re.findall(r'\d+', text))
+    if len(digits) == 8:     # MMDDYYYY
+        month, day, year = digits[:2], digits[2:4], digits[4:]
+    elif len(digits) == 7:   # MDDYYYY
+        month, day, year = '0' + digits[:1], digits[1:3], digits[3:]
+    elif len(digits) == 6:   # MMDDYY
+        month, day, year = digits[:2], digits[2:4], '20' + digits[4:]
+    elif len(digits) == 5:   # MDDYY
+        month, day, year = '0' + digits[:1], digits[1:3], '20' + digits[3:]
+    else:
+        raise ValueError(f"Cannot parse date from digits: {digits} (text: {text})")
+    return '-'.join([year, month, day]) # YYYY-MM-DD format
+
 def read_cfpd_depository_institutions_list_excels(override=False):
     if not override and os.path.exists(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv')):
         deduped_renamed = pd.read_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv'))
@@ -64,50 +79,66 @@ def read_cfpd_depository_institutions_list_excels(override=False):
 
     files = list(itertools.chain.from_iterable(glob.glob(os.path.join(cPATH, 'input', 'CFPD', 'depository_institutions', ext)) for ext in ('*.xlsx', '*.xls')))
     dfs = []
-    no_id = []
+    valid_dates = {(3, 31), (6, 30), (9, 30), (12, 31)}
     for file in files:
         filename = os.path.basename(file)
         ext = filename.split('.')[-1]
-        if filename == '201209_CFPB_depository-institutions-list.xls':
-            # df = pd.read_excel(file, header=2, engine='xlrd')
-            df_all = pd.read_excel(file, sheet_name=None, header=2, engine='xlrd')
-            df = pd.concat(df_all.values(), ignore_index=True)
-            df.columns = df.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
-        elif ext == '.xls':
-            # df = pd.read_excel(file, header=1, engine='xlrd')
-            df_all = pd.read_excel(file, sheet_name=None, header=1, engine='xlrd')
-            df = pd.concat(df_all.values(), ignore_index=True)
-            df.columns = df.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
-        else:
-            # df = pd.read_excel(file, header=1)
-            df_all = pd.read_excel(file, sheet_name=None, header=1)
-            df = pd.concat(df_all.values(), ignore_index=True)
 
-        if 'ID' not in df.columns:
-            df = df[['Institution', 'City', 'State']]
-            df['source_file'] = os.path.basename(file) 
-            no_id.append(df)
+        if filename == '201209_CFPB_depository-institutions-list.xls':
+            header_depo, header_aff, date_idx, engine = 2, 1, 1, 'xlrd' # header rows, row index with date information, engine to use when reading excel file
+        elif filename == '201409_cfpb_depository-institutions-list.xls':
+            header_depo, header_aff, date_idx, engine = 1, 2, 0, 'xlrd'
+        elif ext == '.xls':
+            header_depo, header_aff, date_idx, engine = 1, 1, 0, 'xlrd'
         else:
-            df = df[['ID', 'Institution', 'City', 'State']]
-            df['source_file'] = os.path.basename(file) 
-            dfs.append(df)
+            header_depo, header_aff, date_idx, engine = 1, 1, 0, None
+        
+        if filename == 'bcfp_depository-institutions_20180331.xlsx':
+            prefix = 'Bureau'
+        elif filename in ['bcfp_depository-insitutions-list_2018-09.xlsx', 'bcfp_depository-institutions_list_2018-06.xlsx']:
+            prefix = 'BCFP'
+        else:
+            prefix = 'CFPB'
+
+        df_raw = pd.read_excel(file, sheet_name=f'{prefix} Depository Institutions', header=None, engine=engine)
+        df_depo = pd.read_excel(file, sheet_name=f'{prefix} Depository Institutions', header=header_depo, engine=engine)
+        df_aff = pd.read_excel(file, sheet_name=f'{prefix} Depository Affilliates', header=header_aff, engine=engine)
+        df_depo.columns = df_depo.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
+        df_aff.columns = df_aff.columns.str.replace(r'\s+', ' ', regex=True).str.strip()
+        
+        df_depo['Regulation'] = 'Depository'
+        df_aff['Regulation'] = 'Affiliates'
+
+        if 'ID' not in df_depo.columns:
+            df_depo['ID'] = -1 # filler ID to indicate that RSSD ID information is not available
+            df_aff['ID'] = -1 # filler ID to indicate that RSSD ID information is not available
+
+        df_depo = df_depo[['ID', 'Institution', 'City', 'State', 'Regulation']]
+        df_aff = df_aff[['ID', 'Institution', 'City', 'State', 'Regulation']]
+        df = pd.concat([df_depo, df_aff], ignore_index=True)
+
+        # getting date information
+        date = extract_date_parts(df_raw.iloc[date_idx, 0])
+        df['Reporting date'] = date
+        df['Institution'] = df['Institution'].str.upper().str.strip() 
+        dfs.append(df)
 
     combined = pd.concat(dfs, ignore_index=True)
-    deduped = combined.drop_duplicates(subset=['ID', 'Institution'])
-    deduped_renamed = deduped.rename(columns={'ID': '#ID_RSSD', 'Institution': 'Company', 'City': 'City company', 'State': 'State company'})
-    deduped_renamed.to_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv'), index=False)
+    combined_renamed = combined.rename(columns={'ID': '#ID_RSSD', 'Institution': 'Company', 'City': 'City company', 'State': 'State company'})
+    print(f"before filtering out: {len(combined_renamed)}")
 
-    #check the institutions that does not include RSSD ID 
-    no_id = pd.concat(no_id, ignore_index=True)
-    no_id['Institution'] = no_id['Institution'].str.upper()
-    deduped_sub = deduped[['Institution', 'City', 'State']].drop_duplicates()
-    not_in_deduped_df = no_id.merge(deduped_sub, on=['Institution', 'City', 'State'], how='left', indicator=True)
-    not_in_deduped_df = not_in_deduped_df[not_in_deduped_df['_merge'] == 'left_only']
+    # filter out empty rows & comment rows
+    all_na = (combined_renamed['#ID_RSSD'].isna() & combined_renamed['Company'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna())
+    comment_row = (combined_renamed['#ID_RSSD'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna() & combined_renamed['Company'].astype(str).str.strip().str.startswith('**'))
+    rows_to_remove = all_na | comment_row
+    combined_renamed = combined_renamed[~rows_to_remove]
+    print(f"after filtering out: {len(combined_renamed)}")
 
-    print(f"no_id institutions: {len(no_id)}")
-    print(f"no_id institution not included in deduped: {len(not_in_deduped_df)}")
-    print(not_in_deduped_df.head())
-    return deduped_renamed
+    # remove duplicates
+    final_cfpb = combined_renamed.drop_duplicates()
+    final_cfpb.to_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined'))
+    print(f"after removing duplicates: {len(final_cfpb)}")
+    return final_cfpb
 
 def get_nic_data(override=False):
     if override or not os.path.exists(os.path.join(cPATH, 'temp', 'nic_combined.csv')):
@@ -169,21 +200,19 @@ def get_nic_data(override=False):
     nic_dedup = nic_dedup.drop_duplicates()
 
     # name-quarter level to match with institution name impute missing quarters with the nearest quarter info
-    complete = nic_cross[['NM_LGL', 'quarter']].copy()
+    complete = nic_cross[['NM_LGL', 'quarter']].copy().drop_duplicates()
     nic_complete = complete.merge(nic_dedup, on=['NM_LGL', 'quarter'], how='left')
     nic_complete.sort_values(['NM_LGL', 'quarter'], inplace=True)
 
     # rssd id-quarter level to match with rssd id 
     complete_id = nic_cross[['#ID_RSSD', 'quarter']].copy()
     nic_id_complete = complete_id.merge(nic_valid, on=['#ID_RSSD', 'quarter'], how='left')
-
+    
     # impute missing quarters with the nearest quarter info
     nic_complete.update(nic_complete.groupby('NM_LGL').ffill())
     nic_complete.update(nic_complete.groupby('NM_LGL').bfill())
     nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').ffill())
     nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').bfill())
-
-
     return nic_complete, nic_id_complete
 
 def quarter_to_period_end(quarter_str):
@@ -385,9 +414,10 @@ if __name__ == "__main__":
     df["With narrative"] = df["Consumer complaint narrative"].notna()
 
     ### Getting RSSD ID & institution type
-    nic, nic_raw = get_nic_data(override=True)
+    nic, nic_raw = get_nic_data()
     nic['quarter'] = nic['quarter'].dt.to_period('Q')
     df = df.merge(nic, how='left', left_on=['Company', 'Quarter sent'], right_on=['NM_LGL', 'quarter'])
+    print(f"df after merging with nic: {len(df)}")
 
     # major credit bureaus
     df['Company'] = df['Company'].str.upper().str.strip() 
@@ -414,6 +444,7 @@ if __name__ == "__main__":
 
     for company_type in df['Company type'].unique():
         print(f"RSSD ID identified for {len(df[(df['Company type']==company_type)&df['#ID_RSSD'].notna()])} out of {len(df[df['Company type']==company_type])} complaints filed to {company_type}")
+    print(f"df size after financial institution classification: {len(df)}")
     
     ### financial institutions size (total assets in dollars)
     ## get asset information for banks
@@ -468,6 +499,7 @@ if __name__ == "__main__":
     others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
     others.loc[:,'Total assets'] = np.nan
     df = pd.concat([bank, cu, bhc, others], ignore_index=True)
+    print(f"df size after getting total assets info: {len(df)}")
 
     ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
     cpi_df = pd.read_csv(os.path.join(cPATH, 'input', 'CPIAUCSL.csv'))
@@ -482,6 +514,19 @@ if __name__ == "__main__":
     df['Log total assets'] = np.log(df['Total assets'])
     df['Log real total assets'] = np.log(df['Real total assets'])
 
+    ### regulation
+    cfpb = read_cfpd_depository_institutions_list_excels(override=True)
+    cfpb_noid = cfpb[cfpb['#ID_RSSD']==-1]
+    cfpb_id = cfpb[cfpb['#ID_RSSD']!=-1]
+
+    df = df.merge(cfpb_id[['#ID_RSSD', 'Reporting date', 'Regulation']], how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD', 'Reporting date'])
+    df_with_reg = df[df['Regulation'].isin(['Depository', 'Affiliates'])]
+    df_no_reg = df[df['Regulation'].isna()].drop(['Regulation', 'Reporting date'], axis=1)
+    print(f"regulation under CFPD identified for {len(df_with_reg)} out of {len(df)} complaints (matching with ID RSSD)")
+    df_no_reg = df_no_reg.merge(cfpb_noid[['Company', 'Reporting date', 'Regulation']], how='left', left_on=['Company', 'Quarter sent end date'], right_on=['Company', 'Reporting date'])
+    print(f"regulation under CFPD identified for {len(df_no_reg[df_no_reg['Regulation'].isin(['Depository', 'Affiliates'])])} out of {len(df_no_reg)} complaints previously not identified (additional matching with name)")
+    df = pd.concat([df_with_reg, df_no_reg], ignore_index=True)
+
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
     znarr = df[(df['With narrative']==1) & (df['Zombie data'] == 1)] # complaints on zombie data with narrative
@@ -489,7 +534,7 @@ if __name__ == "__main__":
     znarr.to_csv(os.path.join(cPATH, 'temp', 'zombie_complaints_narratives.csv'))
 
     ### delete irrelevant columns
-    df.drop(['NM_LGL', 'quarter', 'Quarter sent end date'], axis=1)
+    df.drop(['NM_LGL', 'quarter', 'Quarter sent end date', 'Reporting date'], axis=1)
 
     ### save processed df
     df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
