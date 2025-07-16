@@ -526,6 +526,7 @@ if __name__ == "__main__":
     df_no_reg = df_no_reg.merge(cfpb_noid[['Company', 'Reporting date', 'Regulation']], how='left', left_on=['Company', 'Quarter sent end date'], right_on=['Company', 'Reporting date'])
     print(f"regulation under CFPD identified for {len(df_no_reg[df_no_reg['Regulation'].isin(['Depository', 'Affiliates'])])} out of {len(df_no_reg)} complaints previously not identified (additional matching with name)")
     df = pd.concat([df_with_reg, df_no_reg], ignore_index=True)
+    df['Regulation'] = df['Regulation'].fillna('NA')
 
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
