@@ -515,7 +515,7 @@ if __name__ == "__main__":
     df['Log real total assets'] = np.log(df['Real total assets'])
 
     ### regulation
-    cfpb = read_cfpd_depository_institutions_list_excels(override=True)
+    cfpb = read_cfpd_depository_institutions_list_excels()
     cfpb_noid = cfpb[cfpb['#ID_RSSD']==-1]
     cfpb_id = cfpb[cfpb['#ID_RSSD']!=-1]
 

@@ -468,7 +468,6 @@ if __name__ == "__main__":
     explore_total_assets()
     for company_type in ['bank', 'credit union', 'bank holding company']:
         plot_real_assets(company_type)
-        plot_complaints_and_response_per_size_company_quarter_level(company_type)
 
     print("exporation of variables finished")
     
