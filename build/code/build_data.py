@@ -123,80 +123,96 @@ def read_cfpd_depository_institutions_list_excels(override=False):
         df['Institution'] = df['Institution'].str.upper().str.strip() 
         dfs.append(df)
 
+
     combined = pd.concat(dfs, ignore_index=True)
-    combined_renamed = combined.rename(columns={'ID': '#ID_RSSD', 'Institution': 'Company', 'City': 'City company', 'State': 'State company'})
+    combined_renamed = combined.rename(columns={'Institution': 'Company', 'City': 'City company', 'State': 'State company'})
     print(f"before filtering out: {len(combined_renamed)}")
 
     # filter out empty rows & comment rows
-    all_na = (combined_renamed['#ID_RSSD'].isna() & combined_renamed['Company'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna())
-    comment_row = (combined_renamed['#ID_RSSD'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna() & combined_renamed['Company'].astype(str).str.strip().str.startswith('**'))
+    all_na = (combined_renamed['ID'].isna() & combined_renamed['Company'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna())
+    comment_row = (combined_renamed['ID'].isna() & combined_renamed['City company'].isna() & combined_renamed['State company'].isna() & combined_renamed['Company'].astype(str).str.strip().str.startswith('**'))
     rows_to_remove = all_na | comment_row
     combined_renamed = combined_renamed[~rows_to_remove]
     print(f"after filtering out: {len(combined_renamed)}")
 
     # remove duplicates
     final_cfpb = combined_renamed.drop_duplicates()
-    final_cfpb.to_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined'))
     print(f"after removing duplicates: {len(final_cfpb)}")
+
+    # fill rssd id if there is a matching ('Company', 'City company', 'State company') pair
+    def get_real_id(ser):
+        rssd_values = ser.unique()
+        if len(rssd_values) == 2:
+            rssd_values = rssd_values.astype(int).tolist()
+            rssd_values.remove(-1)     
+        return rssd_values[0]
+    #import pdb; pdb.set_trace()
+    id_check = final_cfpb.groupby(['Company', 'City company', 'State company']).agg(**{'#ID_RSSD': ('ID', get_real_id)}).reset_index()    
+    final_cfpb = final_cfpb.merge(id_check, on=['Company', 'City company', 'State company'], how='left')
+    final_cfpb.drop('ID', axis=1, inplace=True)
+    final_cfpb.to_csv(os.path.join(cPATH, 'temp', 'cfpb_all_depository_institutions_combined.csv'))
     return final_cfpb
 
 def get_nic_data(override=False):
-    if override or not os.path.exists(os.path.join(cPATH, 'temp', 'nic_combined.csv')):
-        nic_actv = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_ACTIVE.CSV'), low_memory=False) # NIC dataset to obtain institution types
-        nic_clsd = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_CLOSED.CSV'), low_memory=False)
-        nic_brnch = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_BRANCHES.CSV'), low_memory=False)
-        nic_actv = nic_actv[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END']]
-        nic_clsd = nic_clsd[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END']]
-        nic_brnch = nic_brnch[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END']]
-        # nic = pd.concat([nic_actv, nic_clsd, nic_brnch])
-        nic = pd.concat([nic_actv, nic_clsd])
-        nic['NM_LGL'] = nic['NM_LGL'].str.upper().str.strip()
+    nic_path, nic_raw_path = os.path.join(cPATH, 'temp', 'nic_combined.csv'), os.path.join(cPATH, 'temp', 'nic_combined_raw.csv')
+    if not override and os.path.exists(nic_path) and os.path.exists(nic_raw_path):
+        nic = pd.read_csv(os.path.join(cPATH, 'temp', 'nic_combined.csv'))
+        nic_raw = pd.read_csv(os.path.join(cPATH, 'temp', 'nic_combined_raw.csv'))
+        return nic, nic_raw
 
-        # cross join to track rssd id changes over time
-        quarters_df = pd.DataFrame({'quarter': pd.date_range(start='2010-01-01', end='2025-06-30', freq='QE')})
-        quarters_df['key'] = 1
-        nic['key'] = 1
-        nic_cross = nic.merge(quarters_df, on='key', how='left')
-        nic_cross.drop(columns='key', inplace=True)
 
-        rssd_counts = nic[['NM_LGL', '#ID_RSSD']].drop_duplicates().groupby('NM_LGL').size().reset_index(name='rssd_count')
-        nic_cross = nic_cross.merge(rssd_counts, on='NM_LGL', how='left')
+    nic_actv = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_ACTIVE.CSV'), low_memory=False) # NIC dataset to obtain institution types
+    nic_clsd = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_CLOSED.CSV'), low_memory=False)
+    nic_brnch = pd.read_csv(os.path.join(cPATH, 'input', 'NIC', 'CSV_ATTRIBUTES_BRANCHES.CSV'), low_memory=False)
+    nic_actv = nic_actv[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END', 'CITY', 'STATE_CD']]
+    nic_clsd = nic_clsd[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END', 'CITY', 'STATE_CD']]
+    # nic_brnch = nic_brnch[['#ID_RSSD', 'CHTR_TYPE_CD', 'ENTITY_TYPE', 'NM_LGL', 'D_DT_START', 'D_DT_END']]
+    # nic = pd.concat([nic_actv, nic_clsd, nic_brnch])
+    nic = pd.concat([nic_actv, nic_clsd])
+    nic['NM_LGL'] = nic['NM_LGL'].str.upper().str.strip()
 
-        # if multiple RSSD ID exist for same name, get rssd id valid for each period
-        # if only one RSSD ID exists for same name, get that rssd id for all periods
-        nic_cross['D_DT_START'] = pd.to_datetime(nic_cross['D_DT_START']) 
-        nic_cross['D_DT_END'] = pd.to_datetime(nic_cross['D_DT_END'], errors='coerce') # 12/13/9999, which indicates on-going relationships causes error -> fill with nan in that case
-        nic_cross['D_DT_END'].fillna(pd.Timestamp('2262-04-11'), inplace=True)  # change nans into upper bound of datetime64[ns] (2262-04-11)
-        
-        nic_valid = nic_cross[
-            ((nic_cross['rssd_count'] > 1) & (nic_cross['quarter'] >= nic_cross['D_DT_START']) & (nic_cross['quarter'] <= nic_cross['D_DT_END'])) |
-            (nic_cross['rssd_count'] == 1)
-        ].copy()
+    # cross join to track rssd id changes over time
+    quarters_df = pd.DataFrame({'quarter': pd.date_range(start='2010-01-01', end='2025-06-30', freq='QE')})
+    quarters_df['key'] = 1
+    nic['key'] = 1
+    nic_cross = nic.merge(quarters_df, on='key', how='left')
+    nic_cross.drop(columns='key', inplace=True)
 
-        # create company type variable based on CHTR_TYPE_CD and ENTITY_TYPE
-        nic_valid['Company type'] = 'others'
-        bank_ind = (nic_valid['CHTR_TYPE_CD'].isin([200, 300, 320, 340]) |nic_valid['ENTITY_TYPE'].isin(['SMB', 'DBR', 'NAT', 'NMB', 'ISB']))
-        cu_ind =  (nic_valid['CHTR_TYPE_CD']==330) |nic_valid['ENTITY_TYPE'].isin(['FCU', 'SCU']) # credit union
-        bhc_ind = (nic_valid['ENTITY_TYPE'].isin(['BHC', 'FBH', 'BHC', 'FHD', 'SLHC'])) # bank/saving/loan holding companies
-        insur_ind = (nic_valid['CHTR_TYPE_CD']==550) # insurance broker or agent and/or insurance company
-        sec_ind = (nic_valid['CHTR_TYPE_CD']==700) # Securities Broker and/or Dealer
-        #nic.loc[sec_ind, 'Company type'] = 'security related'
-        #nic.loc[insur_ind, 'Company type'] = 'insurance related'
-        nic_valid.loc[bhc_ind, 'Company type'] = 'bank holding company'
-        nic_valid.loc[cu_ind, 'Company type'] = 'credit union'
-        nic_valid.loc[bank_ind, 'Company type'] = 'bank'
+    rssd_counts = nic[['NM_LGL', '#ID_RSSD']].drop_duplicates().groupby('NM_LGL').size().reset_index(name='rssd_count')
+    nic_cross = nic_cross.merge(rssd_counts, on='NM_LGL', how='left')
 
-        # if the same name X qurter falls into two or more category, apply the follwing priority
-        priority = {'bank': 1, 'credit union': 2, 'bank holding company':3, 'insurance related':4, 'security related': 5, 'others':6}
-        nic_valid['type_priority'] = nic_valid['Company type'].map(priority)
-        priority_combos = (nic_valid.groupby('NM_LGL')['type_priority'].apply(lambda x: tuple(sorted(x.unique()))).reset_index(name='priority_combo'))
-        print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'}))
-        nic_valid.to_csv(os.path.join(cPATH, 'temp', 'nic_raw.csv'), index=False)
-    else:
-        nic_valid = pd.read_csv(os.path.join(cPATH, 'temp', 'nic_combined.csv'))
+    # if multiple RSSD ID exist for same name, get rssd id valid for each period
+    # if only one RSSD ID exists for same name, get that rssd id for all periods
+    nic_cross['D_DT_START'] = pd.to_datetime(nic_cross['D_DT_START']) 
+    nic_cross['D_DT_END'] = pd.to_datetime(nic_cross['D_DT_END'], errors='coerce') # 12/13/9999, which indicates on-going relationships causes error -> fill with nan in that case
+    nic_cross['D_DT_END'].fillna(pd.Timestamp('2262-04-11'), inplace=True)  # change nans into upper bound of datetime64[ns] (2262-04-11)
+    
+    nic_valid = nic_cross[
+        ((nic_cross['rssd_count'] > 1) & (nic_cross['quarter'] >= nic_cross['D_DT_START']) & (nic_cross['quarter'] <= nic_cross['D_DT_END'])) |
+        (nic_cross['rssd_count'] == 1)
+    ].copy()
+
+    # create company type variable based on CHTR_TYPE_CD and ENTITY_TYPE
+    nic_valid['Company type'] = 'others'
+    bank_ind = (nic_valid['CHTR_TYPE_CD'].isin([200, 300, 320, 340]) |nic_valid['ENTITY_TYPE'].isin(['SMB', 'DBR', 'NAT', 'NMB', 'ISB']))
+    cu_ind =  (nic_valid['CHTR_TYPE_CD']==330) |nic_valid['ENTITY_TYPE'].isin(['FCU', 'SCU']) # credit union
+    bhc_ind = (nic_valid['ENTITY_TYPE'].isin(['BHC', 'FBH', 'BHC', 'FHD', 'SLHC'])) # bank/saving/loan holding companies
+    insur_ind = (nic_valid['CHTR_TYPE_CD']==550) # insurance broker or agent and/or insurance company
+    sec_ind = (nic_valid['CHTR_TYPE_CD']==700) # Securities Broker and/or Dealer
+    #nic.loc[sec_ind, 'Company type'] = 'security related'
+    #nic.loc[insur_ind, 'Company type'] = 'insurance related'
+    nic_valid.loc[bhc_ind, 'Company type'] = 'bank holding company'
+    nic_valid.loc[cu_ind, 'Company type'] = 'credit union'
+    nic_valid.loc[bank_ind, 'Company type'] = 'bank'
+
+    # if the same name X qurter falls into two or more category, apply the follwing priority
+    priority = {'bank': 1, 'credit union': 2, 'bank holding company':3, 'insurance related':4, 'security related': 5, 'others':6}
+    nic_valid['type_priority'] = nic_valid['Company type'].map(priority)
+    priority_combos = (nic_valid.groupby('NM_LGL')['type_priority'].apply(lambda x: tuple(sorted(x.unique()))).reset_index(name='priority_combo'))
+    print(priority_combos['priority_combo'].value_counts().reset_index(name='count').rename(columns={'index': 'priority_combo'}))
 
     nic_dedup = nic_valid.sort_values('type_priority', ascending=True).drop_duplicates(subset=['NM_LGL', 'quarter'], keep='first')
-    nic_dedup = nic_dedup.drop(['CHTR_TYPE_CD', 'ENTITY_TYPE', 'type_priority', 'D_DT_START', 'D_DT_END'], axis=1)
+    nic_dedup = nic_dedup.drop(['CHTR_TYPE_CD', 'ENTITY_TYPE', 'type_priority', 'D_DT_START', 'D_DT_END', 'CITY', 'STATE_CD'], axis=1)
     nic_dedup = nic_dedup.drop_duplicates()
 
     # name-quarter level to match with institution name impute missing quarters with the nearest quarter info
@@ -213,6 +229,9 @@ def get_nic_data(override=False):
     nic_complete.update(nic_complete.groupby('NM_LGL').bfill())
     nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').ffill())
     nic_id_complete.update(nic_id_complete.groupby('#ID_RSSD').bfill())
+
+    nic_complete.to_csv(os.path.join(cPATH, 'temp', 'nic_combined.csv'), index=False)
+    nic_id_complete.to_csv(os.path.join(cPATH, 'temp', 'nic_combined_raw.csv'), index=False)
     return nic_complete, nic_id_complete
 
 def quarter_to_period_end(quarter_str):
@@ -278,7 +297,19 @@ def get_ncua_data(path, override=False):
 
     ncua_all = pd.concat(ncua_all, ignore_index=True)
     ncua_all.rename(columns={'ACCT_010': 'Total assets'}, inplace=True)
-    ncua_all['CYCLE_DATE'] = pd.to_datetime(ncua_all['CYCLE_DATE']).astype(str)
+    ncua_all['CYCLE_DATE'] = pd.to_datetime(ncua_all['CYCLE_DATE'])
+
+    # fill missing RSSD ID by matching with (CU_NAME, CU_NUMBER) pair
+    ncua_id = ncua_all[ncua_all['RSSD'].notna()].copy()
+    for idx, row in ncua_all[ncua_all['RSSD'].isna()].iterrows():
+        candidates = ncua_id[(ncua_id['CU_NAME'] == row['CU_NAME']) & (ncua_id['CU_NUMBER'] == row['CU_NUMBER'])]
+        if not candidates.empty:
+            candidates = candidates.copy()
+            candidates['date_diff'] = (candidates['CYCLE_DATE'] - row['CYCLE_DATE']).abs()
+            best_match = candidates.loc[candidates['date_diff'].idxmin()]
+            ncua_all.at[idx, 'RSSD'] = best_match['RSSD']
+
+    ncua_all['CYCLE_DATE'] = ncua_all['CYCLE_DATE'].astype(str)
     ncua_all.to_csv(os.path.join(cPATH, 'temp', 'ncua_combined.csv'), index=False)
     return ncua_all
 
@@ -304,7 +335,6 @@ def get_bhc_financial_data(path, override=False):
                 print(f"Error reading {file}: {e}") # the ffiec txt files are divided in columns - it is normal that some files do not contain RCFD2170 column and are excluded from ffiec_all
 
     bhcf_all = pd.concat(bhcf_all, ignore_index=True)
-
     bhcf_all['Consolidated'] = bhcf_all['BHCK2170'].notna() # indicates whether consolidated total assets is reported
     bhcf_all.rename(columns={'RSSD9001': 'RSSD ID', 'RSSD9999': 'bhcf report date', 'BHCK2170': 'Total assets'}, inplace=True)
     bhcf_all['Parent only assets'] = bhcf_all[['BHCP2170', 'BHSP2170']].sum(axis=1, skipna=True)
@@ -331,28 +361,44 @@ def bank_total_assets_in_bhc(nic, ffiec_crp): # get sum of total assets for chil
     rel_cross = relationships[['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'key', 'D_DT_START', 'D_DT_END']].merge(quarters_df, on='key', how='left')
     rel_cross.drop(columns='key', inplace=True)
 
-    rel_valid = rel_cross[(rel_cross['quarter'] >= rel_cross['D_DT_START']) &(rel_cross['quarter'] <= rel_cross['D_DT_END'])] # filter out invalid dates
+    rel_valid = rel_cross[(rel_cross['quarter'] >= rel_cross['D_DT_START']) &(rel_cross['quarter'] <= rel_cross['D_DT_END'])].copy() # filter out invalid dates
+    rel_vallid = rel_valid.drop_duplicates(['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'quarter'])
     rel_valid.drop(['D_DT_START', 'D_DT_END'], axis=1, inplace=True)
+
     # Merge with NIC dataset and FFIEC call reports to get Company type and Total assets
     nic.drop(['D_DT_START', 'D_DT_END'], axis=1, inplace=True)
-    ffiec_crp['Reporting Period End Date'] = pd.to_datetime(ffiec_crp['Reporting Period End Date'])
+    rel_valid['quarter'] = rel_valid['quarter'].astype(str)
     rel_valid = rel_valid.merge(nic[['#ID_RSSD', 'Company type', 'quarter']], left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['#ID_RSSD', 'quarter'], how='left') # get company type of offspring
     merged = rel_valid.merge(ffiec_crp, left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['IDRSSD', 'Reporting Period End Date'], how='left')
     print("parent-subsidiary relationships, quarterly level", merged.shape)
-    # filter out non-banks & remove duplicates 
-    is_bank = (merged['Company type']=='bank')
-    merged = merged[is_bank]
+
+    # filter out non-banks & remove duplicates
+    merged = merged[merged['Company type']=='bank']
     print("After filtering out non-banks", merged.shape)
-    merged = merged.drop_duplicates(subset=['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'Reporting Period End Date'])
+    merged = merged.drop_duplicates(subset=['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'quarter'])
     print("After removing dupplicates:", merged.shape)
 
     # Aggregate total assets of banks under each BHC per quarter
-    # BankCount: Number of subsidiaries with non-missing total assets
+    # BankNotnaCount: Number of subsidiaries with non-missing total assets
     # BankTotal: Sum of total assets across subsidiaries (returns NaN if all values are NaN)
-    # BankCountNanIncluded: Total number of subsidiaries (including those with NaN total assets)
+    # BankCount: Total number of subsidiaries (including those with NaN total assets)
     grouped = merged.groupby(['#ID_RSSD_PARENT', 'Reporting Period End Date'])
-    bhc_assets = grouped['Total assets'].agg(BankCount='count', BankAssets=lambda x: x.sum(min_count=1)).reset_index()
-    return bhc_assets
+    bhc_assets = grouped['Total assets'].agg(BankNotnaCount='count', BankAssets=lambda x: x.sum(min_count=1), BankCount='size').reset_index()
+    bhc_assets['Reporting Period End Date'] = bhc_assets['Reporting Period End Date'].astype(str)
+    return bhc_assets, merged
+
+def get_lag_quarter(date): # input: date in str 'yyyy-mm-dd' format
+    md_dict = {'03-31': '12-31', '06-30': '03-31', '09-30': '06-30', '12-31': '09-30'}
+    year = date[:4]
+    md = date[5:]
+    lag_year = str(int(year)-1) if md == '03-31' else year  
+    return f"{lag_year}-{md_dict[md]}"
+
+def aggregate_regulation(x):
+    uniq = x.unique()
+    if len(uniq) == 1:
+        return uniq[0]
+    return '-'.join(sorted(uniq))
 
 if __name__ == "__main__":
     # basic statistics of the whole dataset
@@ -415,7 +461,11 @@ if __name__ == "__main__":
 
     ### Getting RSSD ID & institution type
     nic, nic_raw = get_nic_data()
-    nic['quarter'] = nic['quarter'].dt.to_period('Q')
+    if nic['quarter'].dtype == 'O' or nic['quarter'].dtype.name == 'string':
+        nic['quarter'] = pd.to_datetime(nic['quarter']).dt.to_period('Q')
+    else:
+        nic['quarter'] = snic['quarter'].dt.to_period('Q')
+
     df = df.merge(nic, how='left', left_on=['Company', 'Quarter sent'], right_on=['NM_LGL', 'quarter'])
     print(f"df after merging with nic: {len(df)}")
 
@@ -441,65 +491,82 @@ if __name__ == "__main__":
     df['Company type'] = df['Company type'].fillna('others')
     print(df['Company type'].unique())
     print(df.groupby('Company type').count())
-
-    for company_type in df['Company type'].unique():
-        print(f"RSSD ID identified for {len(df[(df['Company type']==company_type)&df['#ID_RSSD'].notna()])} out of {len(df[df['Company type']==company_type])} complaints filed to {company_type}")
     print(f"df size after financial institution classification: {len(df)}")
     
     ### financial institutions size (total assets in dollars)
-    ## get asset information for banks
+    ## get asset information for banks from ffiec call reports (031/041/051)
     ffiec_path = os.path.join(cPATH, 'input', 'FFIEC', 'CDR Call Reports')
     ffiec = get_ffiec_data(ffiec_path)
     df['Quarter sent end date'] = df['Quarter sent'].astype(str).apply(quarter_to_period_end) # calcuate end date of quarter when the complain was sent to the company for match purpose
 
-    # all institutes in ffiec dataset are classified as banks
-    bank = df[df['Company type']=='bank']
-    bank = bank.merge(ffiec, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['IDRSSD', 'Reporting Period End Date']) # all banks have #ID_RSSD, so match with RSSD ID
-    bank.drop(['NM_LGL', 'quarter', 'Reporting Period End Date', 'IDRSSD', 'Financial Institution Name'], axis=1, inplace=True)
-    print(f"total assets identified for {bank['Total assets'].notna().sum()} out of {len(bank)} complaints filed to banks")
+    df = df.merge(ffiec, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['IDRSSD', 'Reporting Period End Date']) # match with RSSD ID
+    df.rename(columns={'Total assets': 'Total assets bank'}, inplace=True)
+
+    ffiec_dup = ffiec.drop_duplicates(['Financial Institution Name', 'Reporting Period End Date'], keep=False)
+    df.drop(['IDRSSD', 'Reporting Period End Date', 'Financial Institution Name'], axis=1, inplace=True)
+    df = df.merge(ffiec_dup, how='left', left_on=['Company', 'Quarter sent end date'], right_on=['Financial Institution Name', 'Reporting Period End Date']) # match with name
+    
+    # combine information gathered from matching with rssd id and name
+    df['Total assets bank'] = df['Total assets bank'].combine_first(df['Total assets']) 
+    df['#ID_RSSD'] = df['#ID_RSSD'].combine_first(df['IDRSSD'])
+    df.loc[df['Total assets bank'].notna(), 'Company type'] = 'bank' # all the institution that file ffiec call reports 031/041/051 are banks
+    print(f"total assets identified for {df['Total assets bank'].notna().sum()} out of {len(df[df['Company type']=='bank'])} complaints filed to banks")
+    df.drop(['IDRSSD', 'Reporting Period End Date', 'Financial Institution Name', 'Total assets'], axis=1, inplace=True)
 
     ## get asset information for credit unions
     ncua_path = os.path.join(cPATH, 'input', 'NCUA')
     ncua = get_ncua_data(ncua_path)
+    ncua_id = ncua[ncua['RSSD'].notna()]
 
-    cu = df[df['Company type']=='credit union']
-    cu = cu.merge(ncua, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['RSSD', 'CYCLE_DATE']) # all credit unions have #ID_RSSD, so match with RSSD ID
-    cu.drop(['CU_NUMBER', 'quarter', 'CYCLE_DATE', 'RSSD', 'CU_NAME'], axis=1, inplace=True)
-    print(f"total assets of identified for {cu['Total assets'].notna().sum()} out of {len(cu)} complaints filed to credit unions")
+    df = df.merge(ncua_id, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'],right_on=['RSSD', 'CYCLE_DATE']) # first match with IDRSSD
+    df.rename(columns={'Total assets': 'Total assets cu'}, inplace=True)
+    df.drop(['RSSD', 'CYCLE_DATE', 'CU_NAME', 'CU_NUMBER'], axis=1, inplace=True)
+
+    ncua_dup = ncua.drop_duplicates(['CU_NAME', 'CYCLE_DATE'], keep=False)
+    df = df.merge(ncua_dup, how='left', left_on=['Company', 'Quarter sent end date'], right_on=['CU_NAME', 'CYCLE_DATE']) # match with name
+
+    # combine the matched information 
+    df['Total assets cu'] = df['Total assets cu'].combine_first(df['Total assets'])
+    df['#ID_RSSD'] = df['#ID_RSSD'].combine_first(df['RSSD'])
+    df.loc[df['Total assets cu'].notna(), 'Company type'] = 'credit union' # all the institution that file NCUA call reports are credit union
+    print(f"total assets identified for {df['Total assets cu'].notna().sum()} out of {len(df[df['Company type']=='credit union'])} complaints filed to credit union")
+    df.drop(['RSSD', 'CYCLE_DATE', 'CU_NAME', 'CU_NUMBER', 'Total assets'], axis=1, inplace=True)
 
     ## get asset information for bank holding companies
     bhcf_path = os.path.join(cPATH, 'input', 'FFIEC', 'Holding Company Financial Data')
     bhcf = get_bhc_financial_data(bhcf_path) # get total assets of bhc
-    bhc_bank = bank_total_assets_in_bhc(nic_raw, ffiec) # get sum of total assets held by banks under bhc
+    bhc_bank, bhc_offsprings = bank_total_assets_in_bhc(nic_raw, ffiec) # get sum of total assets held by banks under bhc
 
-    bhc_bank['Reporting Period End Date'] = bhc_bank['Reporting Period End Date'].astype(str)
-    bhc = df[df['Company type']=='bank holding company']
-    bhc = bhc.merge(bhcf, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['RSSD ID', 'bhcf report date']) # all bhcs have #ID_RSSD, so match with RSSD ID
-    bhc = bhc.merge(bhc_bank, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD_PARENT', 'Reporting Period End Date'])
+    df = df.merge(bhcf, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['RSSD ID', 'bhcf report date']) # match with rssd id 
+    df = df.merge(bhc_bank, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD_PARENT', 'Reporting Period End Date'])
+    df.rename(columns={'Total assets': 'Total assets bhc'}, inplace=True)
+    df.loc[df['Total assets bhc'].notna(), 'Company type'] = 'bank holding company' # all the institution that file NCUA call reports are credit union
+    print(len(df), "after matching with rssd id")
 
-    print(f"bhc total assets identified for {bhc['Total assets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
-    print(f"bhc total assets ranges between: {bhc['Total assets'].min()} to {bhc['Total assets'].max()}")
-    print(f"bhc total assets held by banks identified for {bhc['BankAssets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
-    print(f"bhc total assets held by banks ranges between: {bhc['BankAssets'].min()} to {bhc['BankAssets'].max()}")
+    print(f"bhc total assets identified for {df['Total assets bhc'].notna().sum()} out of {len(df[df['Company type']=='bank holding company'])} complaints filed to bank holding companies")
+    print(f"bhc total assets ranges between: {df['Total assets bhc'].min()} to {df['Total assets bhc'].max()}")
+    print(f"bhc total assets held by banks identified for {df['BankAssets'].notna().sum()} out of {len(df[df['Company type']=='bank holding company'])} complaints filed to bank holding companies")
+    print(f"bhc total assets held by banks ranges between: {df['BankAssets'].min()} to {df['BankAssets'].max()}")
 
-    bhc.to_csv(os.path.join(cPATH,  'temp', 'bhc_assets.csv')) # save to compare bhc total assets vs. bhc total assets held by banks
+    df[df['Company type']=='Bank holding company'].to_csv(os.path.join(cPATH,  'temp', 'bhc_assets.csv')) # save to compare bhc total assets vs. bhc total assets held by banks
 
     # adjust total assets based on exploratory analysis of BankAssets and TotalAssets
     # we use BankAssets as our default measure of total assets for bhcs since it better reflects each institution's capability regarding its banking system
     # when AssetsRatio < 0.3, bank subsidiaries are not properly matched, resulting in big discrepancy between Total assets & BankAssets -> better use Total assets
-    bhc['AssetsRatio'] = bhc['BankAssets'] / bhc['Total assets']    
-    bhc.rename(columns={'Total assets': 'BhcAssets', 'BankAssets': 'Total assets'}, inplace=True)
-    use_bhc_assets = bhc[bhc['AssetsRatio']<0.3] 
-    bhc.loc[use_bhc_assets.index, 'Total assets'] = bhc.loc[use_bhc_assets.index, 'BhcAssets']
+    df['AssetsRatio'] = df['BankAssets'] / df['Total assets bhc']    
+    df.rename(columns={'Total assets bhc' : 'BhcAssets', 'BankAssets': 'Total assets bhc'}, inplace=True)
+    use_bhc_assets = df[(df['AssetsRatio']<0.3)&(df['Total assets bhc'].notna())&(df['BhcAssets'].notna())] 
+    df.loc[use_bhc_assets.index, 'Total assets bhc'] = df.loc[use_bhc_assets.index, 'BhcAssets']
+    df['BankCount'] = df['BankCount'].fillna(-1)
 
-    bhc.drop(['quarter', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankCount', 'BhcAssets'], axis=1, inplace=True)
-    print(f"final bhc total assets identified for {bhc['Total assets'].notna().sum()} out of {len(bhc)} complaints filed to bank holding companies")
-    print(f"final bhc total assets ranges between: {bhc['Total assets'].min()} to {bhc['Total assets'].max()}")
+    df.drop(['quarter', 'RSSD ID', 'bhcf report date', 'Consolidated', '#ID_RSSD_PARENT', 'Reporting Period End Date', 'BankNotnaCount', 'BhcAssets'], axis=1, inplace=True)
+    print(f"final bhc total assets identified for {df['Total assets bhc'].notna().sum()} out of {len(df[df['Company type']=='Bank holding company'])} complaints filed to bank holding companies")
+    print(f"final bhc total assets ranges between: {df['Total assets bhc'].min()} to {df['Total assets bhc'].max()}")
 
-    others = df[~df['Company type'].isin(['bank', 'credit union', 'bank holding company'])]
-    others.loc[:,'Total assets'] = np.nan
-    df = pd.concat([bank, cu, bhc, others], ignore_index=True)
-    print(f"df size after getting total assets info: {len(df)}")
+    # combine all total assets info
+    df['Total assets'] = df['Total assets bank'].fillna(df['Total assets cu']).fillna(df['Total assets bhc'])
+    df.drop(columns=['Total assets bank', 'Total assets cu', 'Total assets bhc'], axis=1, inplace=True)
+    print("financial institution classification updated: ", df.groupby('Company type').count())
 
     ## Use the Consumer Price Index (CPI) to adjust total assets to real values in 2013 dollars.
     cpi_df = pd.read_csv(os.path.join(cPATH, 'input', 'CPIAUCSL.csv'))
@@ -514,19 +581,47 @@ if __name__ == "__main__":
     df['Log total assets'] = np.log(df['Total assets'])
     df['Log real total assets'] = np.log(df['Real total assets'])
 
-    ### regulation
-    cfpb = read_cfpd_depository_institutions_list_excels()
-    cfpb_noid = cfpb[cfpb['#ID_RSSD']==-1]
-    cfpb_id = cfpb[cfpb['#ID_RSSD']!=-1]
+    ## Lagged total assets variable
+    df['LagQuarter'] = df['Quarter sent end date'].apply(get_lag_quarter)
+    lag_df = df[['#ID_RSSD', 'Quarter sent end date', 'Total assets']].drop_duplicates()
+    lag_df = lag_df.rename(columns={'Quarter sent end date': 'LagQuarter', 'Total assets': 'Lagged total assets'})
+    df = df.merge(lag_df, how='left', on=['#ID_RSSD', 'LagQuarter'])
 
+    ### CFPB regulation
+    cfpb = read_cfpd_depository_institutions_list_excels(override=True)
+    cfpb_noid = cfpb[cfpb['#ID_RSSD']==-1].copy().drop('#ID_RSSD', axis=1)
+    cfpb_id = cfpb[cfpb['#ID_RSSD']!=-1].copy()
+
+    # get regulation information in bhc level
+    bhc_offsprings['quarter'] = bhc_offsprings['quarter'].astype(str)
+    bhc_offsprings = bhc_offsprings[['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'quarter']].merge(cfpb_id, how='left', left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['#ID_RSSD', 'Reporting date'])
+    bhc_with_reg = bhc_offsprings[bhc_offsprings['Regulation'].notna()]
+    bhc_no_reg = bhc_offsprings[bhc_offsprings['Regulation'].isna()][['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'quarter']]
+
+    nic_raw['quarter'] = nic_raw['quarter'].astype(str)
+    bhc_no_reg = bhc_no_reg.merge(nic_raw[['#ID_RSSD', 'quarter', 'NM_LGL']], how='left', left_on=['ID_RSSD_OFFSPRING', 'quarter'], right_on=['#ID_RSSD', 'quarter'])
+    bhc_no_reg = bhc_no_reg.merge(cfpb_noid, how='left', left_on=['NM_LGL', 'quarter'], right_on=['Company', 'Reporting date'])
+    bhc_reg = pd.concat([bhc_with_reg, bhc_no_reg], ignore_index=True)[['#ID_RSSD_PARENT', 'ID_RSSD_OFFSPRING', 'quarter', 'Regulation']]
+    bhc_reg['Regulation'] = bhc_reg['Regulation'].fillna('NoRegulation')
+
+    bhc_reg_agg = bhc_reg.groupby(['#ID_RSSD_PARENT', 'quarter']).agg({'Regulation': aggregate_regulation}).reset_index()
+    df = df.merge(bhc_reg_agg, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD_PARENT', 'quarter'])
+    df = df.rename(columns={'Regulation': 'Regulation_bhc'})
+    print(f"regulation under CFPD identified for {len(df[df['Regulation_bhc'].notna()])} complaints filed to bank holding company")
     df = df.merge(cfpb_id[['#ID_RSSD', 'Reporting date', 'Regulation']], how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD', 'Reporting date'])
-    df_with_reg = df[df['Regulation'].isin(['Depository', 'Affiliates'])]
+    df_with_reg = df[df['Regulation'].notna()].copy()
     df_no_reg = df[df['Regulation'].isna()].drop(['Regulation', 'Reporting date'], axis=1)
-    print(f"regulation under CFPD identified for {len(df_with_reg)} out of {len(df)} complaints (matching with ID RSSD)")
+    print(f"regulation under CFPD identified for {len(df_with_reg)} complaints (matching with ID RSSD)")
     df_no_reg = df_no_reg.merge(cfpb_noid[['Company', 'Reporting date', 'Regulation']], how='left', left_on=['Company', 'Quarter sent end date'], right_on=['Company', 'Reporting date'])
-    print(f"regulation under CFPD identified for {len(df_no_reg[df_no_reg['Regulation'].isin(['Depository', 'Affiliates'])])} out of {len(df_no_reg)} complaints previously not identified (additional matching with name)")
+    print(f"regulation under CFPD identified for {len(df_no_reg[df_no_reg['Regulation'].notna()])} complaints (additional matching with name)")
     df = pd.concat([df_with_reg, df_no_reg], ignore_index=True)
-    df['Regulation'] = df['Regulation'].fillna('NA')
+
+    df['Regulation'] = df['Regulation'].combine_first(df['Regulation_bhc'])
+    df['Regulation'] = df['Regulation'].fillna('NoRegulation')
+    print("complaint level statistics for regulation:")
+    print(df.groupby('Regulation')['Regulation'].count())
+    print("company-quarter level statistics for regulation:")
+    print(df.drop_duplicates(subset=['Company', 'Quarter sent', 'Regulation']).groupby('Regulation').size().reset_index(name='n_company_quarters'))
 
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
@@ -534,8 +629,6 @@ if __name__ == "__main__":
     narr.to_csv(os.path.join(cPATH, 'temp', 'complaints_narratives.csv'))
     znarr.to_csv(os.path.join(cPATH, 'temp', 'zombie_complaints_narratives.csv'))
 
-    ### delete irrelevant columns
-    df.drop(['NM_LGL', 'quarter', 'Quarter sent end date', 'Reporting date'], axis=1)
-
-    ### save processed df
+    ### delete irrelevant columns & save processed df
+    df.drop(['NM_LGL', 'quarter', 'Quarter sent end date', 'Reporting date', 'LagQuarter', 'Regulation_bhc', '#ID_RSSD_PARENT'], axis=1, inplace=True)
     df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
