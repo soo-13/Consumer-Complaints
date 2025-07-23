@@ -722,10 +722,10 @@ def time_trend_in_relief_per_asset_quantile():
 
 def get_color_map(data, var, palette_type='colorblind'):
     palette = sns.color_palette(palette_type, n_colors=len(data[var].unique()))
-    var_sorted = sorted(data[var].unique())
-    color_map = dict(zip(var_sorted, palette))
-    color_handles = [Line2D([0], [0], color=color_map[v], lw=2) for v in var_sorted]
-    return color_map, color_handles, var_sorted
+    var_order = data[var].unique()
+    color_map = dict(zip(var_order, palette))
+    color_handles = [Line2D([0], [0], color=color_map[v], lw=2) for v in var_order]
+    return color_map, color_handles, var_order
 
 def draw_policy_line(ax, grouped, states, extended=False):
     for state in states:
@@ -935,7 +935,7 @@ def plot_DV_per_size(DV_agg, data, titles, savepath): # DV_agg should be a list 
             axes[i].set_title(f'{titles[i]} vs Log Mean Total Assets (in 2013 Dollars)')
             axes[i].set_xscale('log')
             #axes[i].set_yscale('symlog', linthresh=1e-4)
-    save_plot(fig, f'{title}_per_size_company_level.png', savepath)  
+    save_plot(fig, f'{title}_per_size_company_level.png', savepath) 
 
 def time_heatmap_DV_per_asset_quantile(DV_agg, data, titles, savepath):
     agg_dict = {}
@@ -977,7 +977,23 @@ def time_heatmap_DV_per_asset_quantile(DV_agg, data, titles, savepath):
             axes[i, j].set_xticks(range(len(period_labels)))
             axes[i, j].set_xticklabels(period_labels, rotation=90)
 
-    save_plot(fig, f'time_heatmap_{title}_per_asset_quantiles_company_type.png', savepath)
+    # heatmap of quarterly trend in relief rate by total assets quantile for bank/bhc - each regulatory type separately
+    fig, axes = plt.subplots(data['Regulation'].nunique(), len(DV_agg), figsize=(10 + 4*len(DV_agg), 6 + 4*data['Regulation'].nunique()), sharex=True)
+    axes = np.atleast_1d(axes).flatten()
+    grouped = data[data['Company type']=='bank_bhc'].groupby(['AssetsQuantile', 'Quarter sent', 'Regulation']).agg(**agg_dict).reset_index()
+
+    for i, (dv, method) in enumerate(DV_agg):
+        for j, reg in enumerate(grouped['Regulation'].unique()):
+            ax = axes[i * grouped['Regulation'].nunique() + j]
+            pivot= grouped[grouped['Regulation']==reg].pivot(index='AssetsQuantile', columns='Quarter sent', values=f'{dv}_{method}')
+            sns.heatmap(pivot, cmap='YlGnBu', annot=False, cbar_kws={'label': titles[i]}, linewidths=0.5, linecolor='gray', ax=ax)
+            ax.set_ylabel('Financial Institution Size Quantile')
+            ax.set_title(f'{titles[i]} Heatmap by Quarter and Size Quantile ({reg})')
+            ax.invert_yaxis()
+            ax.set_xticks(range(len(period_labels)))
+            ax.set_xticklabels(period_labels, rotation=90)
+
+    save_plot(fig, f'time_heatmap_{title}_per_asset_quantiles_bank_regulation.png', savepath)
 
 def time_trend_in_DV(DV_agg, data, titles, savepath): 
     if not pd.api.types.is_datetime64_any_dtype(data['Quarter sent']):
@@ -1064,8 +1080,7 @@ def time_trend_in_DV(DV_agg, data, titles, savepath):
         axes[i].set_title(f'{titles[i]} trend - top complaints states')
         set_quarter_xticks(axes[i])
         #axes[i].set_yscale('symlog', linthresh=1e-4)
-
-    axes[len(DV_agg)-1].legend(handles=color_handles, labels=color_labels, title='States', loc='upper left')
+    axes[len(DV_agg)-1].legend(handles=color_handles, labels=color_labels.tolist(), title='States', loc='upper left')
     save_plot(fig, f'quarterly_trend_{title}_top_states.png', savepath)
 
 def plot_prop_zombie_per_complaint_counts(data, savepath):
@@ -1102,6 +1117,234 @@ def plot_prop_zombie_per_complaint_counts(data, savepath):
     ax.set_xlabel('Company type')
     ax.set_title('Average zombie complaint rate per company type (company-quarter level)')
     save_plot(fig, 'proportion_zombie_company_type_barplot.png', savepath)
+
+def summarize_from_column(df, column, label):
+    counts = df[column]
+    total_n = len(counts)
+    
+    summary = {
+        'Label': label,
+        'Mean': counts.mean(),
+        'Median': counts.median(),
+        '1st Quartile (Q1)': counts.quantile(0.25),
+        '3rd Quartile (Q3)': counts.quantile(0.75),
+        'Count == 0': (counts == 0).sum(),
+        'Pct == 0': (counts == 0).mean(),
+        'Count == 1': (counts == 1).sum(),
+        'Pct == 1': (counts == 1).mean(),
+        'Count < 5': (counts < 5).sum(),
+        'Pct < 5': (counts < 5).mean(),
+        'Count < 10': (counts < 10).sum(),
+        'Pct < 10': (counts < 10).mean(),
+        'N (company-quarters)': total_n
+    }
+    
+    return pd.DataFrame([summary])
+
+def regulation_effect_analysis():
+    # keep observations according to the inclusion-exclusion criteria
+    tmp = df[(df['Company type'].isin(['bank', 'bank holding company', 'credit union']))
+            &(df['Quarter sent'] >= pd.Period('2012Q2'))
+            &(df['BankCount']<2)
+            &(df['Total assets'].notna())].copy()
+
+    # (1) histogram of total counts and zombie counts in company-quarterly level
+    total = tmp.groupby(['Quarter sent', 'Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), regulation=('Regulation', 'first'),  zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Quarter sent', 'Company']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Quarter sent', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    sns.histplot(data=data, x='zcount', ax=axes[0], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    sns.histplot(data=data, x='count', ax=axes[1], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    axes[1].set_xlabel('Complaint counts')
+    axes[0].set_ylabel('number of company-quarters')
+    axes[0].set_title('Distribution zombie complaint counts (company-quarterly level)')
+    axes[1].set_title('Distribution all complaint counts (company-quarterly level)')
+    save_plot(fig, 'dist_complaint_count_company_quarterly_level.png')
+
+    print("information on distribution of zombie complaint counts (company-quarterly level)")
+    summary_z = summarize_from_column(data, 'zcount', 'Zombie Complaints')
+    summary_t = summarize_from_column(data, 'count', 'All Complaints')
+
+    summary_df = pd.concat([summary_z, summary_t], ignore_index=True)
+    summary_df = summary_df.round(3)
+    for col in ['Pct == 0', 'Pct == 1', 'Pct < 5', 'Pct < 10']:
+        summary_df[col] = summary_df[col].map(lambda x: f"{x:.1%}")
+
+    print(summary_df.to_string(index=False))
+
+    #(2) x: total assets, y1: proportion of zombie complaints, y2: zombie complaints count, y3: total complaints count, hue: regulation (company-quarterly level)
+    #import pdb; pdb.set_trace()
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    sns.scatterplot(data=data, x='assets', y='zprop', hue='regulation', palette='colorblind', legend=True, ax=axes[0], alpha=0.7)
+    sns.scatterplot(data=data, x='assets', y='zcount', hue='regulation', palette='colorblind', legend=True, ax=axes[1], alpha=0.7)
+    sns.scatterplot(data=data, x='assets', y='count', hue='regulation', palette='colorblind', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Total assets')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by total assets (company-quarterly level)')
+    axes[1].set_title('Number of zombie complaint by total assets (company-quarterly level)')
+    axes[1].set_title('Number of all complaint by total assets (company-quarterly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_xscale('log')
+        axes[i].set_ylim(ymin=0)
+        axes[i].axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+        axes[i].legend()
+
+    save_plot(fig, 'complaint_count_total_assets_company_quarterly_level.png')
+
+    #(3) histogram of complaint counts (company-yearly level)
+    total = tmp.groupby(['Year sent', 'Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), regulation=('Regulation', lambda x: x.mode().iloc[0]), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year sent', 'Company']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year sent', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    sns.histplot(data=data, x='zcount', ax=axes[0], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    sns.histplot(data=data, x='count', ax=axes[1], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    axes[1].set_xlabel('Complaint counts')
+    axes[0].set_ylabel('number of company-quarters')
+    axes[0].set_title('Distribution zombie complaint counts (company-yearly level)')
+    axes[1].set_title('Distribution all complaint counts (company-yearly level)')
+    save_plot(fig, 'dist_complaint_count_company_yearly_level.png')
+
+    print("information on distribution of zombie complaint counts (company-yearly level)")
+    summary_z = summarize_from_column(data, 'zcount', 'Zombie Complaints')
+    summary_t = summarize_from_column(data, 'count', 'All Complaints')
+
+    summary_df = pd.concat([summary_z, summary_t], ignore_index=True)
+    summary_df = summary_df.round(3)
+    for col in ['Pct == 0', 'Pct == 1', 'Pct < 5', 'Pct < 10']:
+        summary_df[col] = summary_df[col].map(lambda x: f"{x:.1%}")
+
+    print(summary_df.to_string(index=False))
+
+    #(4) x: total assets, y1: proportion of zombie complaints, y2: zombie complaints count, y3: total complaints count, hue: regulation (company-yearly level)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    sns.scatterplot(data=data, x='assets', y='zprop', hue='regulation', palette='colorblind', legend=True, ax=axes[0], alpha=0.6)
+    sns.scatterplot(data=data, x='assets', y='zcount', hue='regulation', palette='colorblind', legend=True, ax=axes[1], alpha=0.6)
+    sns.scatterplot(data=data, x='assets', y='count', hue='regulation', palette='colorblind', legend=True, ax=axes[2], alpha=0.6)
+    axes[2].set_xlabel('Total assets')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by total assets (company-yearly level)')
+    axes[1].set_title('Number of zombie complaint by total assets (company-yearly level)')
+    axes[2].set_title('Number of all complaint by total assets (company-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_xscale('log')
+        axes[i].set_ylim(ymin=0)
+        axes[i].axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+        axes[i].legend()
+
+    save_plot(fig, 'complaint_count_total_assets_company_yearly_level.png')
+
+    #(5) plot (4) separating regulation type Depository and NoRegulation
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+    for i, reg in enumerate(['NoRegulation', 'Depository']):
+        sns.scatterplot(data=data[data['regulation']==reg], x='assets', y='zprop', legend=True, ax=axes[0,i], alpha=0.6)
+        sns.scatterplot(data=data[data['regulation']==reg], x='assets', y='zcount', legend=True, ax=axes[1,i], alpha=0.6)
+        sns.scatterplot(data=data[data['regulation']==reg], x='assets', y='count', legend=True, ax=axes[2,i], alpha=0.6)
+        
+        axes[2,i].set_xlabel('Total assets')
+        axes[0,i].set_ylabel('Proportion of zombie complaints')
+        axes[1,i].set_ylabel('Zombie complaint count')
+        axes[2,i].set_ylabel('Total complaint count')
+
+        axes[0,i].set_title(f'{reg}|Proportion of of zombie complaints by total assets')
+        axes[1,i].set_title(f'{reg} | Number of zombie complaint by total assets')
+        axes[2,i].set_title(f'{reg} | Number of all complaint by total assets')
+
+        axes[1, i].set_yscale('symlog')
+        axes[2, i].set_yscale('symlog')
+
+        for j in range(3):
+            axes[j,i].set_xscale('log')
+            axes[j,i].set_ylim(ymin=0)
+
+    save_plot(fig, 'complaint_count_total_assets_company_yearly_level_regulation.png')
+
+    #(6) x: total assets, y1: proportion of zombie complaints, y2: zombie complaints count, y3: total complaints count, hue: regulation (company level)
+    for year in [2020, 2021, 2022, 2023, 2024]:
+        total = tmp[tmp['Year sent']==year].groupby(['Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), regulation=('Regulation', lambda x: x.mode().iloc[0]), zprop=('Zombie data', 'mean')).reset_index()
+        zombie = tmp[(tmp['Year sent']==year)&(tmp['Zombie data'] == 1)].groupby(['Company']).agg(zcount=('Total assets', 'size')).reset_index()
+        data = pd.merge(total, zombie, on=['Company'], how='left')
+        data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+        sns.scatterplot(data=data, x='assets', y='zprop', hue='regulation', palette='colorblind', legend=True, ax=axes[0], alpha=0.6)
+        sns.scatterplot(data=data, x='assets', y='zcount', hue='regulation', palette='colorblind', legend=True, ax=axes[1], alpha=0.6)
+        sns.scatterplot(data=data, x='assets', y='count', hue='regulation', palette='colorblind', legend=True, ax=axes[2], alpha=0.6)
+        axes[2].set_xlabel('Total assets')
+
+        axes[0].set_ylabel('Proportion of zombie complaints')
+        axes[1].set_ylabel('Zombie complaint count')
+        axes[2].set_ylabel('Total complaint count')
+
+        axes[0].set_title(f'Proportion of of zombie complaints by total assets (Year {year})')
+        axes[1].set_title(f'Number of zombie complaint by total assets (Year {year})')
+        axes[2].set_title(f'Number of all complaint by total assets (Year {year})')
+
+        axes[1].set_yscale('symlog')
+        axes[2].set_yscale('symlog')
+
+        for i in range(3):
+            axes[i].set_xscale('log')
+            axes[i].set_ylim(ymin=0)
+            axes[i].axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+            axes[i].legend()
+        save_plot(fig, f'complaint_count_total_assets_year{year}.png')
+
+    # (7) distrubution of total assets - focusing around 10B
+    total = tmp.groupby(['Year sent', 'Company']).agg(assets=('Total assets', 'mean')).reset_index()
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    sns.histplot(data=total, x='assets', binrange=(5_000_000_000, 15_000_000_000), ax=ax, element='bars')
+    ax.set_xlabel('Total assets')
+    ax.set_ylabel('number of company-quarters')
+    ax.set_title('Distribution of total assets (company-yearly level)')
+    save_plot(fig, 'dist_total_assets_company_yearly_level.png')
+
+    # (8) scatter plot - focusing around 10B
+    total = tmp.groupby(['Year sent', 'Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), regulation=('Regulation', lambda x: x.mode().iloc[0]), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year sent', 'Company']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year sent', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    data = data[(data['assets']>5000000000)&(data['assets']<15000000000)] 
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    sns.scatterplot(data=data, x='assets', y='zprop', hue='regulation', palette='colorblind', legend=True, ax=axes[0], alpha=0.6)
+    sns.scatterplot(data=data, x='assets', y='zcount', hue='regulation', palette='colorblind', legend=True, ax=axes[1], alpha=0.6)
+    sns.scatterplot(data=data, x='assets', y='count', hue='regulation', palette='colorblind', legend=True, ax=axes[2], alpha=0.6)
+    axes[2].set_xlabel('Total assets')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by total assets (company-yearly level)')
+    axes[1].set_title('Number of zombie complaint by total assets (company-yearly level)')
+    axes[2].set_title('Number of all complaint by total assets (company-yearly level)')
+
+    for i in range(3):
+        axes[i].axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+        axes[i].legend()
+
+    save_plot(fig, 'complaint_count_total_assets_around_cutoff.png')
+
 
 if __name__ == "__main__":
     ### load dataset
@@ -1153,8 +1396,9 @@ if __name__ == "__main__":
     quarterly_plot_assets_vs_relief()
     time_trend_in_relief_per_asset_quantile()
     time_trend_in_relief_rate()
-    '''
+
     ### DV: proportion of zombie data related complaints among all compliants
+    df['Regulation'] = df['Regulation'].fillna('NA') ### TEMPORARY
     savepath = os.path.join(cPATH, 'temp', 'DV_prop_zombie_complaints')
     if not os.path.exists(savepath):
         os.mkdir(savepath)
@@ -1170,3 +1414,6 @@ if __name__ == "__main__":
     tmp.loc[tmp['Company type'].isin(['bank', 'bank holding company']), 'Company type'] = 'bank_bhc'
     time_trend_in_DV([('Zombie data', 'mean')], tmp, ['Proportion of zombie data complaints'], savepath)
     plot_prop_zombie_per_complaint_counts(tmp, savepath)
+    '''
+    # check regulation effect 
+    regulation_effect_analysis()
