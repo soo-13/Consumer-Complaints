@@ -4,6 +4,7 @@
 #####################
 ### run build dir ###
 #####################
+python merging_ACS_dataset.py
 python build_data.py
 python explore.py
 
