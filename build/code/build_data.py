@@ -623,6 +623,25 @@ if __name__ == "__main__":
     print("company-quarter level statistics for regulation:")
     print(df.drop_duplicates(subset=['Company', 'Quarter sent', 'Regulation']).groupby('Regulation').size().reset_index(name='n_company_quarters'))
 
+    ### merge ACS dataset to get socio-demographic variables
+    acs = pd.read_csv(os.path.join(cPATH, 'temp', 'ACSdataset', 'ACS5YR_combined.csv'))
+    acs_val = acs[acs['zip'].notna()].copy()
+    df['ACS year'] = (df['Year received'] + 2).clip(upper=2023)
+
+    if not pd.api.types.is_integer_dtype(df['ZIP code']):
+        df['ZIP code'] = pd.to_numeric(df['ZIP code'], errors='coerce').astype('Int64')
+    if not pd.api.types.is_integer_dtype(acs['zip']):
+        acs_val['zip'] = pd.to_numeric(acs_val['zip'], errors='coerce').astype('Int64')
+
+    df = df.merge(acs_val, how='left', left_on=['ZIP code', 'ACS year'], right_on=['zip', 'Year'])
+    
+    # get real median income by reflecting CPI - MedIncome is in {ACS year} inflation adjusted dollars & RealMedIncome is in 2013 inflation adjusted dollars
+    cpi_df['year'] = cpi_df['observation_date'].str[:4]
+    mean_cpi_by_year = cpi_df.groupby('year')['CPIAUCSL'].mean().to_dict()
+    df['CPI_by_Year'] = pd.to_numeric(df['Year'], errors='coerce').astype('Int64').astype(str).map(mean_cpi_by_year)
+    df['RealMedIncome'] = df['MedIncome']*(mean_cpi_by_year['2013']/df['CPI_by_Year'])
+    df.drop(['ACS year', 'Year', 'CPI_by_Year'], axis=1, inplace=True)
+
     ### save data with narratives to observe complaint narratives
     narr = df[df['With narrative']==1] # complaints with narrative
     znarr = df[(df['With narrative']==1) & (df['Zombie data'] == 1)] # complaints on zombie data with narrative
