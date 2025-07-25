@@ -219,8 +219,7 @@ def plot_category_distribution(dfs, col, labels, savepath, top_n=0, suppress=Fal
 def explore_bhc_assets():
     #bhc = df[df['Company type']=='bank holding company']
     bhc_assets = pd.read_csv(os.path.join(cPATH, 'temp', 'bhc_assets.csv'))
-    grouped = bhc_assets.groupby(['Quarter sent', '#ID_RSSD']).agg(TotalAssets=('Total assets', 'mean'), BankAssets=('BankAssets', 'mean'), 
-                                                                    BankCount=('BankCount', 'mean'), Consolidated=('Consolidated', 'mean')).reset_index()
+    grouped = bhc_assets.groupby(['Quarter sent', '#ID_RSSD']).agg(TotalAssets=('Total assets', 'mean'), BankAssets=('BankAssets', 'mean'), Consolidated=('Consolidated', 'mean')).reset_index()
     grouped['AssetsRatio'] = grouped['BankAssets'] / grouped['TotalAssets']
 
     complaint_level = {'Total Count': len(bhc_assets), 
@@ -304,8 +303,6 @@ def explore_bhc_assets():
     plt.tight_layout()
     plt.savefig(os.path.join(cPATH, 'temp', 'bank_assets_dist_missing_total_assets.png'))
 
-    # distribution of TotalAssets depending on missingness of Bank Assets & report type of TotalAssets (consolidated vs. parent-only)
-
 def explore_total_assets():
     for company_type in ['bank', 'credit union', 'bank holding company']:
         subset = df[df['Company type']==company_type]
@@ -387,6 +384,41 @@ def plot_real_assets(company_type):
     print(f"Company order by mean log real assets ({company_type}):")
     print(company_means)
 
+def check_regulation_criterion():
+    ### exclusion criteria
+    com_quart = df.drop_duplicates(['Company', 'Quarter sent'])
+    print("Preparing the dataset for regulation analysis")
+    print(f"All data - complaints level: {len(df)}, company-quarter level: {len(com_quart)}")
+
+    # include bank, bank holding company, credit union 
+    df_val = df[df['Company type'].isin(['bank', 'bank holding company', 'credit union'])].copy()
+    com_quart_val = com_quart[com_quart['Company type'].isin(['bank', 'bank holding company', 'credit union'])].copy()
+    print(f"After including only complaints from bank/bhc, credit union-  complaints level: {len(df_val)}, company-quarter level: {len(com_quart_val)}")
+
+    # drop observations before 2012Q2
+    df_val = df_val[df_val['Quarter sent'] >= pd.Period('2012Q2')].copy()
+    com_quart_val = com_quart_val[com_quart_val['Quarter sent'] >= pd.Period('2012Q2')].copy()
+    print(f"After excluding complaints before 2012 Q2 -  complaints level: {len(df_val)}, company-quarter level: {len(com_quart_val)}")
+
+    # drop bhcs with more than one bank within RELV_LVL 2
+    df_val = df_val[df_val['BankCount']<2]
+    com_quart_val = com_quart_val[com_quart_val['BankCount']<2]
+    print(f"After excluding bhcs with more than two banks -  complaints level: {len(df_val)}, company-quarter level: {len(com_quart_val)}")
+
+    # drop observations without total assets information
+    df_val = df_val[df_val['Total assets'].notna()]
+    com_quart_val = com_quart_val[com_quart_val['Total assets'].notna()]
+    print(f"After excluding institutions without total assets information -  complaints level: {len(df_val)}, company-quarter level: {len(com_quart_val)}")
+    print(f"Final data size - complaints level: {len(df_val)}, company-quarter level: {len(com_quart_val)}")
+
+    df_val['AssetBin'] = df_val['Total assets'].apply(lambda x: '>10B' if x >= 10e9 else '<10B')
+    com_quart_val['AssetBin'] = com_quart_val['Total assets'].apply(lambda x: '>10B' if x >= 10e9 else '<10B')
+    
+    print("final data statistics in complaints level: ")
+    print(pd.crosstab(df_val['AssetBin'], df_val['Regulation'], margins=True))
+    print("final data statistics in company-quarter level: ")
+    print(pd.crosstab(com_quart_val['AssetBin'], com_quart_val['Regulation'], margins=True))
+
 
 if __name__ == "__main__":
     ### load dataset
@@ -413,6 +445,9 @@ if __name__ == "__main__":
     df['CCPA phase at receipt'] = pd.Categorical(df['CCPA phase at receipt'], categories=ccpa_order, ordered=False)
     df['CCPA phase at sent'] = pd.Categorical(df['CCPA phase at sent'], categories=ccpa_order, ordered=False)
 
+    ### regulation variable
+    df['Regulation'] = df['Regulation'].fillna('NA')
+
     ### split data into complaints with/without narratives for exploratory analysis
     subdf = df[df['With narrative']] # with narrative
     mssdf = df[~df['With narrative']] # missing narrative
@@ -423,7 +458,7 @@ if __name__ == "__main__":
 
     ### state-quarterly level plots
     quarter_index = sorted(df['Quarter received'].unique())
-
+    '''
     visualize_duration_categorized()
     visualize_yearly_trend_in_duration()
     visualize_monthly_complaints_counts()
@@ -468,6 +503,8 @@ if __name__ == "__main__":
     explore_total_assets()
     for company_type in ['bank', 'credit union', 'bank holding company']:
         plot_real_assets(company_type)
-
+    '''
+    # CFPB regulation
+    check_regulation_criterion()
     print("exporation of variables finished")
     
