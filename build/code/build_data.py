@@ -400,6 +400,28 @@ def aggregate_regulation(x):
         return uniq[0]
     return '-'.join(sorted(uniq))
 
+def get_zip_county_crosswalk(path, override=False):
+    if not override and os.path.exists(os.path.join(cPATH, 'temp', 'zip_county_crosswalk.csv')):
+        zipcounty = pd.read_csv(os.path.join(cPATH, 'temp', 'zip_county_crosswalk.csv'))
+        return zipcounty 
+
+    all_files = glob.glob(os.path.join(path, '*.xlsx'))
+    zipcounty = []
+    for file in all_files:
+        year = ''.join(re.findall(r'\d+', os.path.basename(file)))[2:]
+        try:
+            zipcounty_year = pd.read_excel(file)
+            zipcounty_year.columns = zipcounty_year.columns.str.lower()
+            zipcounty_year = zipcounty_year[['zip', 'county', 'res_ratio']]
+            zipcounty_year['year'] =  int(year)
+            zipcounty.append(zipcounty_year)
+        except Exception as e:
+            print(f"Error reading {file}: {e}") 
+
+    zipcounty = pd.concat(zipcounty, ignore_index=True)
+    zipcounty.to_csv(os.path.join(cPATH, 'temp', 'zip_county_crosswalk.csv'), index=False)
+    return zipcounty
+    
 if __name__ == "__main__":
     # basic statistics of the whole dataset
     df = pd.read_csv(os.path.join(cPATH, "input", "CFPD", "complaints.csv"))
@@ -608,7 +630,7 @@ if __name__ == "__main__":
     df = df.merge(bhc_reg_agg, how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD_PARENT', 'quarter'])
     df = df.rename(columns={'Regulation': 'Regulation_bhc'})
     print(f"regulation under CFPD identified for {len(df[df['Regulation_bhc'].notna()])} complaints filed to bank holding company")
-    df = df.merge(cfpb_id[['#ID_RSSD', 'Reporting date', 'Regulation']], how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD', 'Reporting date'])
+    df = df.merge(cfpb_id[cfpb_id['#ID_RSSD'].notna()][['#ID_RSSD', 'Reporting date', 'Regulation']], how='left', left_on=['#ID_RSSD', 'Quarter sent end date'], right_on=['#ID_RSSD', 'Reporting date'])
     df_with_reg = df[df['Regulation'].notna()].copy()
     df_no_reg = df[df['Regulation'].isna()].drop(['Regulation', 'Reporting date'], axis=1)
     print(f"regulation under CFPD identified for {len(df_with_reg)} complaints (matching with ID RSSD)")
@@ -624,17 +646,36 @@ if __name__ == "__main__":
     print(df.drop_duplicates(subset=['Company', 'Quarter sent', 'Regulation']).groupby('Regulation').size().reset_index(name='n_company_quarters'))
 
     ### merge ACS dataset to get socio-demographic variables
+    '''
+    ## The following 17 lines of code is for matching in zip code level
     acs = pd.read_csv(os.path.join(cPATH, 'temp', 'ACSdataset', 'ACS5YR_combined.csv'))
     acs_val = acs[acs['zip'].notna()].copy()
     df['ACS year'] = (df['Year received'] + 2).clip(upper=2023)
-
-    if not pd.api.types.is_integer_dtype(df['ZIP code']):
-        df['ZIP code'] = pd.to_numeric(df['ZIP code'], errors='coerce').astype('Int64')
-    if not pd.api.types.is_integer_dtype(acs['zip']):
-        acs_val['zip'] = pd.to_numeric(acs_val['zip'], errors='coerce').astype('Int64')
-
-    df = df.merge(acs_val, how='left', left_on=['ZIP code', 'ACS year'], right_on=['zip', 'Year'])
+    '''
+    ## Use this code for matching in county level
+    df['ACS year'] = (df['Year received'] + 2).clip(upper=2023)
+    zipcounty = get_zip_county_crosswalk(os.path.join(cPATH, 'input', 'zip_county_crosswalk'), override=True)
+    acs = pd.read_csv(os.path.join(cPATH, 'temp', 'ACSdataset_countylvl', 'ACS5YR_combined.csv'))
+    acs['fips'] = (acs['state'].astype(str).str.zfill(2) + acs['county'].astype(str).str.zfill(3)).astype(int) #county code in zipcounty is fips = ssccc where ss is state code and ccc is county code in acs dataset
     
+    demo = acs.merge(zipcounty, how='left', left_on=['fips', 'Year'], right_on=['county', 'year'])
+    demo = demo[demo['zip'].notna()] # drop counties where zip is not matched
+    demo.drop(['county_x', 'county_y', 'year', 'state'], axis=1, inplace=True)
+    acs_vars = [col for col in acs.columns if col not in ['NAME', 'state', 'county', 'Year', 'fips']]
+    demo = demo[demo['res_ratio']>0].copy() # drop if res_ratio is zero
+
+    # consider a county as representative of a zip code when res_ratio > 0.9 
+    print(f"creating a zip-year level acs dataset")
+    demo = demo.sort_values('res_ratio', ascending=False)
+    demo_zip = demo.groupby(['zip', 'Year']).agg(max_ratio=('res_ratio', 'max')).reset_index()
+    demo_zip_val = demo_zip[demo_zip['max_ratio']>0.9]
+    acs_val = demo_zip_val.merge(demo[demo['res_ratio']>0.9], how='left', on=['zip', 'Year'])
+    print(f"keep only zip-county relationships where res_ratio is greater than 0.9: {len(acs_val)}/{len(demo_zip)}")
+
+    if acs_val['zip'].dtype != 'object':
+        acs_val['zip'] = pd.to_numeric(acs_val['zip'], errors='coerce').astype('Int64').astype(str).str.zfill(5)
+    df = df.merge(acs_val, how='left', left_on=['ZIP code', 'ACS year'], right_on=['zip', 'Year'])
+
     # get real median income by reflecting CPI - MedIncome is in {ACS year} inflation adjusted dollars & RealMedIncome is in 2013 inflation adjusted dollars
     cpi_df['year'] = cpi_df['observation_date'].str[:4]
     mean_cpi_by_year = cpi_df.groupby('year')['CPIAUCSL'].mean().to_dict()
@@ -650,4 +691,4 @@ if __name__ == "__main__":
 
     ### delete irrelevant columns & save processed df
     df.drop(['NM_LGL', 'quarter', 'Quarter sent end date', 'Reporting date', 'LagQuarter', 'Regulation_bhc', '#ID_RSSD_PARENT'], axis=1, inplace=True)
-    df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'))
+    df.to_csv(os.path.join(cPATH, 'output', 'complaints_processed.csv'), index=False)
