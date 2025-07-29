@@ -9,7 +9,7 @@ from urllib.parse import quote
 cPATH = os.path.join("/Users", "yeonsoo","Dropbox (MIT)", "Projects", "consumer_complaints", "build")
 baseurl = "https://www2.census.gov/programs-surveys/acs/summary_file/"
 API_KEY = '68f0c084ed938bea6c3776671fd8017cfbffaa3d' 
-
+#HUD_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiI2IiwianRpIjoiZmE4ODZlNmI4OTlmNTg1NzMwZTA4MTk2NmIwODMzMjk2NmZlMDYwYzg2Yzg0ZTYzYjMzZWMyZGE1Zjg2YjI3NjY2NWFiZjRlNGY0ZDMyMDciLCJpYXQiOjE3NTM0NzYwMTcuNjQ2MDc3LCJuYmYiOjE3NTM0NzYwMTcuNjQ2MDc5LCJleHAiOjIwNjkwMDg4MTcuNjQyMTg3LCJzdWIiOiIxMDQyMDciLCJzY29wZXMiOltdfQ.Zni-cvoT3_VQc_WychcDl-2VGWYzY1EEmNs2ip16mzW9VHbJt6OFTRSTNdfFppr2ji72A2X9TmI0Gph0M9PnpA'
 
 def get_geo_path(year):
     if year > 2020:
@@ -105,7 +105,7 @@ def get_target_variables(year):
         variables.extend([f'DP02_0{num}E' for num in range(110, 114)]) # change of variable names for "language spoken at home"
     return variables, labels
 
-def get_ACS_dataset_with_url(download_dir):
+def get_ACS_dataset_with_url(download_dir, level='zcta'):
     if not os.path.exists(download_dir):
             os.mkdir(download_dir)
     print("Downloading ACS Dataset with URL")
@@ -117,8 +117,12 @@ def get_ACS_dataset_with_url(download_dir):
             variables, labels = get_target_variables(year)
             var_str = ",".join(['NAME'] + variables)
 
-            # geography: zip code tabulation area (ZCTA)
-            url = f'https://api.census.gov/data/{year}/acs/acs5/profile?get={var_str}&for=zip%20code%20tabulation%20area:*&key={API_KEY}'
+            if level=='zcta':
+                url = f'https://api.census.gov/data/{year}/acs/acs5/profile?get={var_str}&for=zip%20code%20tabulation%20area:*&key={API_KEY}'
+            elif level=='county':
+                url = f'https://api.census.gov/data/{year}/acs/acs5/profile?get={var_str}&for=county:*&key={API_KEY}'
+            else:
+                print(f"please check your level: {level}")
 
             try:
                 response = requests.get(url)
@@ -130,16 +134,21 @@ def get_ACS_dataset_with_url(download_dir):
             except Exception as e:
                 print(f"[ERROR] Failed for {year}: {e}")
 
-def merging_ACS_dataset(savedir):
+def merging_ACS_dataset(savedir, level='zcta'):
     if not os.path.exists(os.path.join(savedir, "ACS5YR_combined.csv")):
         dfs = []
         for year in range(2013, 2024):
-            df = pd.read_csv(os.path.join(savedir, f"ACS5YR_{year}zip.csv"))
+            if level=='zcta':
+                df = pd.read_csv(os.path.join(savedir, f"ACS5YR_{year}zip.csv"))
+            elif level=='county':
+                df = pd.read_csv(os.path.join(savedir, f"ACS5YR_{year}.csv"))
+            else:
+                print(f"check your level: {level}")
             df['Year'] = year
             dfs.append(df)
 
         dfs = pd.concat(dfs, ignore_index=True)
-        dfs.to_csv(os.path.join(savedir, "ACS5YR_combined.csv"))
+        dfs.to_csv(os.path.join(savedir, "ACS5YR_combined.csv"), index=False)
 
 def get_zcta520_zcta510_match(savedir):
     print("Downloading relationship file: zcta520-zcta510")
@@ -198,12 +207,23 @@ def mapping_zip_with_zcta(ACSdir, crosswalkdir):
         acs_new = acs.merge(crosswalk[['zip', 'zcta']], how='left', left_on='zip code tabulation area', right_on='zcta')
         acs_new.to_csv(os.path.join(ACSdir, f'ACS5YR_{str(year)}zip.csv'), index=False)
 
-    
+
+
+
 if __name__ == "__main__":
+    '''
+    ### for zip-zcta level matching
     ACSpath = os.path.join(cPATH, 'temp', 'ACSdataset')
     crosswalkpath = os.path.join(cPATH, 'temp', 'crosswalk')
     get_ACS_dataset_with_url(ACSpath)
     get_zip_zcta_crosswalk(crosswalkpath)
     mapping_zip_with_zcta(ACSpath, crosswalkpath)
     merging_ACS_dataset(ACSpath)
+    '''
+
+    ### for zip-county-zcta level matching
+    ACSpath = os.path.join(cPATH, 'temp', 'ACSdataset_countylvl')
+    get_ACS_dataset_with_url(ACSpath, level='county')
+    merging_ACS_dataset(ACSpath, level='county')
+
 
