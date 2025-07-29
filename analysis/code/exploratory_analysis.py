@@ -754,21 +754,29 @@ def get_nrow_ncol(n_panels):
     ncols = int(np.ceil(n_panels / nrows))
     return nrows, ncols
 
-def get_asset_quantiles(data, bins=5):
-    tmp_bank = data[data['Company type'].isin(['bank', 'bank holding company'])].copy()
-    bank_assets = (tmp_bank.groupby(['Quarter sent', 'Company'])['Log total assets'].mean().reset_index())
-    bank_assets['AssetsQuantile'] = bank_assets.groupby('Quarter sent')['Log total assets'].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
-    tmp_bank = tmp_bank.merge(bank_assets[['Quarter sent', 'Company', 'AssetsQuantile']], on=['Quarter sent', 'Company'], how='left')
-    print(pd.crosstab(bank_assets['Quarter sent'], bank_assets['AssetsQuantile']))
+def get_asset_quantiles(data, bins=5, by_company_type=True):
+    if by_company_type:
+        tmp_bank = data[data['Company type'].isin(['bank', 'bank holding company'])].copy()
+        bank_assets = (tmp_bank.groupby(['Quarter sent', 'Company'])['Log total assets'].mean().reset_index())
+        bank_assets['AssetsQuantile'] = bank_assets.groupby('Quarter sent')['Log total assets'].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
+        tmp_bank = tmp_bank.merge(bank_assets[['Quarter sent', 'Company', 'AssetsQuantile']], on=['Quarter sent', 'Company'], how='left')
+        print(pd.crosstab(bank_assets['Quarter sent'], bank_assets['AssetsQuantile']))
 
-    tmp_cu = data[data['Company type']=='credit union'].copy()
-    cu_assets = (tmp_cu.groupby(['Quarter sent', 'Company'])['Log total assets'].mean().reset_index())
-    cu_assets['AssetsQuantile'] = cu_assets.groupby('Quarter sent')['Log total assets'].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
-    tmp_cu = tmp_cu.merge(cu_assets[['Quarter sent', 'Company', 'AssetsQuantile']], on=['Quarter sent', 'Company'], how='left')
-    print(pd.crosstab(cu_assets['Quarter sent'], cu_assets['AssetsQuantile']))
-    
-    tmp = pd.concat([tmp_bank, tmp_cu], axis=0)
-    tmp['AssetsQuantile'] = tmp['AssetsQuantile'].astype('Int64')
+        tmp_cu = data[data['Company type']=='credit union'].copy()
+        cu_assets = (tmp_cu.groupby(['Quarter sent', 'Company'])['Log total assets'].mean().reset_index())
+        cu_assets['AssetsQuantile'] = cu_assets.groupby('Quarter sent')['Log total assets'].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
+        tmp_cu = tmp_cu.merge(cu_assets[['Quarter sent', 'Company', 'AssetsQuantile']], on=['Quarter sent', 'Company'], how='left')
+        print(pd.crosstab(cu_assets['Quarter sent'], cu_assets['AssetsQuantile']))
+        
+        tmp = pd.concat([tmp_bank, tmp_cu], axis=0)
+        tmp['AssetsQuantile'] = tmp['AssetsQuantile'].astype('Int64')
+    else:
+        tmp = data.copy()
+        assets = (tmp.groupby(['Quarter sent', 'Company'])['Log total assets'].mean().reset_index())
+        assets['AssetsQuantile'] = assets.groupby('Quarter sent')['Log total assets'].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
+        tmp = tmp.merge(assets[['Quarter sent', 'Company', 'AssetsQuantile']], on=['Quarter sent', 'Company'], how='left')
+        print(pd.crosstab(assets['Quarter sent'], assets['AssetsQuantile']))
+
     return tmp
 
 def set_quarter_xticks(ax, tick_interval=1):
@@ -1136,7 +1144,7 @@ def summarize_from_column(df, column, label):
         'Pct < 5': (counts < 5).mean(),
         'Count < 10': (counts < 10).sum(),
         'Pct < 10': (counts < 10).mean(),
-        'N (company-quarters)': total_n
+        'N': total_n
     }
     
     return pd.DataFrame([summary])
@@ -1345,6 +1353,656 @@ def regulation_effect_analysis():
 
     save_plot(fig, 'complaint_count_total_assets_around_cutoff.png')
 
+def CFPB_depository_analysis():
+    tmp = df[(df['Company type'].isin(['bank', 'bank holding company', 'credit union']))
+            &(df['Quarter sent'] >= pd.Period('2012Q2'))
+            &(df['BankCount']<2)
+            &(df['Total assets'].notna())
+            & (df['Regulation']=='Depository')].copy()
+    tmp['Is CA'] = (tmp['State']=='CA')
+
+    # (1) histogram of total counts and zombie counts in company-quarterly level
+    total = tmp.groupby(['Quarter sent', 'Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'),  zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Quarter sent', 'Company']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Quarter sent', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    sns.histplot(data=data, x='zcount', ax=axes[0], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(False, False))
+    sns.histplot(data=data, x='count', ax=axes[1], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    axes[1].set_xlabel('Complaint counts')
+    axes[0].set_ylabel('number of company-quarters')
+    axes[0].set_title('Distribution zombie complaint counts (company-quarterly level)')
+    axes[1].set_title('Distribution all complaint counts (company-quarterly level)')
+    save_plot(fig, 'depo_dist_complaint_count_company_quarterly_level.png')
+
+    print("information on distribution of zombie complaint counts (company-quarterly level)")
+    summary_z = summarize_from_column(data, 'zcount', 'Zombie Complaints')
+    summary_t = summarize_from_column(data, 'count', 'All Complaints')
+
+    summary_df = pd.concat([summary_z, summary_t], ignore_index=True)
+    summary_df = summary_df.round(3)
+    for col in ['Pct == 0', 'Pct == 1', 'Pct < 5', 'Pct < 10']:
+        summary_df[col] = summary_df[col].map(lambda x: f"{x:.1%}")
+
+    print(summary_df.to_string(index=False))
+
+    # (2) histogram of total counts and zombie counts in company-yearly level
+    total = tmp.groupby(['Year sent', 'Company']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year sent', 'Company']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year sent', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+    sns.histplot(data=data, x='zcount', ax=axes[0], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(False, False))
+    sns.histplot(data=data, x='count', ax=axes[1], discrete=True, element='bars', color='skyblue', alpha=1, log_scale=(True, False))
+    axes[1].set_xlabel('Complaint counts')
+    axes[0].set_ylabel('number of company-quarters')
+    axes[0].set_title('Distribution zombie complaint counts (company-yearly level)')
+    axes[1].set_title('Distribution all complaint counts (company-yearly level)')
+    save_plot(fig, 'depo_dist_complaint_count_company_yearly_level.png')
+
+    print("information on distribution of zombie complaint counts (company-yearly level)")
+    summary_z = summarize_from_column(data, 'zcount', 'Zombie Complaints')
+    summary_t = summarize_from_column(data, 'count', 'All Complaints')
+
+    summary_df = pd.concat([summary_z, summary_t], ignore_index=True)
+    summary_df = summary_df.round(3)
+    for col in ['Pct == 0', 'Pct == 1', 'Pct < 5', 'Pct < 10']:
+        summary_df[col] = summary_df[col].map(lambda x: f"{x:.1%}")
+
+    print(summary_df.to_string(index=False))
+
+    # (3) x: Quarter sent, y: zprop, zcount, count
+    total = tmp.groupby(['Quarter sent', 'State']).agg(count=('Total assets', 'size'), zprop=('Zombie data', 'mean'), isca=('Is CA', 'first')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Quarter sent', 'State']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Quarter sent', 'State'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    data = data.groupby(['Quarter sent', 'isca']).agg(count=('count', 'mean'), zprop=('zprop', 'mean'), zcount=('zcount', 'mean')).reset_index()
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    if not pd.api.types.is_datetime64_any_dtype(data['Quarter sent']):
+        data['Quarter sent'] = data['Quarter sent'].dt.to_timestamp()
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    sns.lineplot(data=data, x='Quarter sent', y='zprop', style='isca', legend=True, ax=axes[0], alpha=0.7)
+    sns.lineplot(data=data, x='Quarter sent', y='zcount', style='isca', legend=True, ax=axes[1], alpha=0.7)
+    sns.lineplot(data=data, x='Quarter sent', y='count', style='isca', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Quarter sent')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by total assets (quarterly level)')
+    axes[1].set_title('Number of zombie complaint by total assets (quarterly level)')
+    axes[1].set_title('Number of all complaint by total assets (quarterly level)')
+
+    for i in range(3):
+        draw_policy_line(axes[i], data, ['CA'], extended=True)
+        set_quarter_xticks(axes[i])
+
+    save_plot(fig, 'depo_quarterly_trend_zprop_complaint_counts.png')
+
+    # (4) x: Quarter sent, y: zprop, zcount, count - top states
+    top_states = df['State'].value_counts().nlargest(5).index.tolist()
+    total = tmp.groupby(['Quarter sent', 'State']).agg(count=('Total assets', 'size'), zprop=('Zombie data', 'mean'), isca=('Is CA', 'first')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Quarter sent', 'State']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Quarter sent', 'State'], how='left')
+    data = data[data['State'].isin(top_states)]
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    data = data.groupby(['Quarter sent', 'isca']).agg(count=('count', 'mean'), zprop=('zprop', 'mean'), zcount=('zcount', 'mean')).reset_index()
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    if not pd.api.types.is_datetime64_any_dtype(data['Quarter sent']):
+        data['Quarter sent'] = data['Quarter sent'].dt.to_timestamp()
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    sns.lineplot(data=data, x='Quarter sent', y='zprop', style='isca', legend=True, ax=axes[0], alpha=0.7)
+    sns.lineplot(data=data, x='Quarter sent', y='zcount', style='isca', legend=True, ax=axes[1], alpha=0.7)
+    sns.lineplot(data=data, x='Quarter sent', y='count', style='isca', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Quarter sent')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by total assets (quarterly level)')
+    axes[1].set_title('Number of zombie complaint by total assets (quarterly level)')
+    axes[1].set_title('Number of all complaint by total assets (quarterly level)')
+
+    for i in range(3):
+        draw_policy_line(axes[i], data, ['CA'], extended=True)
+        set_quarter_xticks(axes[i])
+
+    save_plot(fig, 'depo_quarterly_trend_zprop_complaint_counts_top5_states.png')
+
+    # (5) heatmap - x: Quarter sent, y: asset quantile
+    tmp = get_asset_quantiles(tmp, bins=5, by_company_type=False)
+
+    total = tmp.groupby(['Quarter sent', 'AssetsQuantile']).agg(count=('Total assets', 'size'), assets=('Total assets', 'mean'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Quarter sent', 'AssetsQuantile']).agg(zcount=('Total assets', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Quarter sent', 'AssetsQuantile'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+    if not pd.api.types.is_datetime64_any_dtype(data['Quarter sent']):
+        data['Quarter sent'] = data['Quarter sent'].dt.to_timestamp()
+
+    palette = sns.color_palette("viridis", data['AssetsQuantile'].nunique())
+    titles = ['Proportion of Zombie Complaints', 'Zombie Complaints Count', 'All Complaints Count']
+    fig, axes = plt.subplots(3, 1, figsize=(10, 14), sharex=True)
+    for i, val in enumerate(['zprop', 'zcount', 'count']):
+        pivot= data.pivot(index='AssetsQuantile', columns='Quarter sent', values=val)
+        sns.heatmap(pivot, cmap='YlGnBu', annot=False, cbar_kws={'label': titles[i]}, linewidths=0.5, linecolor='gray', ax=axes[i])
+        axes[i].set_ylabel('Financial Institution Size Quantile')
+        axes[i].set_title(f'{titles[i]} Heatmap by Quarter and Size Quantile')
+        axes[i].invert_yaxis()
+
+    period_labels = pd.PeriodIndex(pivot.columns, freq='Q').strftime('%YQ%q')
+    axes[2].set_xlabel('Quarter Sent')
+    axes[2].set_xticks(range(len(period_labels)))
+    axes[2].set_xticklabels(period_labels, rotation=90)
+    save_plot(fig, 'depo_time_heatmap_per_asset_quantiles.png')
+    import pdb; pdb.set_trace()
+    print(1)
+
+def regulation_effect_in_binary_zombie_counts(savepath):
+    tmp = df[(df['Company type'].isin(['bank', 'bank holding company', 'credit union']))
+            &(df['Quarter sent'] >= pd.Period('2012Q2'))
+            &(df['BankCount']<2)
+            &(df['Total assets'].notna())].copy()
+
+    #(1) x: total assets, y1: DV_agg, hue: regulation (company-yearly level)
+    data = tmp.groupby(['Quarter sent', 'Company']).agg(assets=('Total assets', 'mean'),  zbin=('Zombie data', 'any'), regulation=('Regulation', 'first')).reset_index()
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='assets', y='zbin', hue='regulation', palette='colorblind', legend=True, ax=ax, alpha=0.6)
+    ax.set_xlabel('Total assets')
+    ax.set_ylabel('Binary indicator of receiving zombie complaints')
+    ax.set_title('Binary indicator of receiving zombie complaints by total assets (company-yearly level)')
+    ax.set_xscale('log')
+    ax.axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+    ax.legend()
+    save_plot(fig, 'zbin_total_assets_company_yearly_level.png', savepath)
+
+    #(2) heatmap - proportion of companies with atleast one zombie data in asset quantile X year sent level
+    tmp = get_asset_quantiles(tmp, bins=10, by_company_type=False)
+    data = tmp.groupby(['Quarter sent', 'Company']).agg(assets=('Total assets', 'mean'),  zbin=('Zombie data', 'any'), AssetsQuantile=('AssetsQuantile', 'mean')).reset_index()
+    heatmap_data = data.groupby(['Quarter sent', 'AssetsQuantile']).agg(zrate=('zbin', 'mean')).reset_index()
+    pivot = heatmap_data.pivot(index='Quarter sent', columns='AssetsQuantile', values='zrate')
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
+    sns.heatmap(pivot, annot=True, fmt=".2f", cmap='YlGnBu', cbar_kws={'label': 'Proportion of companies that received zombie data complaints'})
+    plt.title("Proportions of company-quarters with any zombie data by asset quantile and quarter")
+    plt.xlabel("Asset Quantile")
+    plt.ylabel("Quarter Sent")
+    save_plot(fig, 'zbin_rate_heatmap_company_quarterly_level.png', savepath)
+
+
+    #(3) x: total assets, y1: proportion of zombie complaints, y2: zombie complaints count, y3: total complaints count, hue: regulation (company level)
+    for year in [2020, 2021, 2022, 2023, 2024]:
+        data = tmp[tmp['Year sent']==year].groupby(['Company']).agg(assets=('Total assets', 'mean'),  zbin=('Zombie data', 'any'), regulation=('Regulation', lambda x: x.mode().iloc[0])).reset_index()
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10), sharex=True)
+        sns.scatterplot(data=data, x='assets', y='zbin', hue='regulation', palette='colorblind', legend=True, ax=ax, alpha=0.6)
+        ax.set_xlabel('Total assets')
+        ax.set_ylabel('Binary indicator of receiving zombie complaints')
+        ax.set_title(f'Binary indicator of receiving zombie complaints by total assets (Year {year})')
+        ax.set_xscale('log')
+        ax.axvline(x=10_000_000_000, color='gray', linestyle='--', label='10B line')
+        ax.legend()
+        save_plot(fig, f'zbin_total_assets_company_yearly_level_year{year}.png', savepath)
+
+    #(4) lineplot - proportion of companies with atleast one zombie data in asset quantile X year sent level
+    bins = np.linspace(tmp['Log total assets'].min(), tmp['Log total assets'].max(), 20)
+    tmp['asset_bin'] = pd.cut(tmp['Log total assets'], bins)
+    data = tmp.groupby(['Quarter sent', 'Company']).agg(asset_bin=('asset_bin', 'first'),  zbin=('Zombie data', 'any')).reset_index()
+    zrate_by_bin = data.groupby('asset_bin').agg(zrate=('zbin', 'mean')).reset_index()
+    zrate_by_bin['asset_bin_center'] = zrate_by_bin['asset_bin'].apply(lambda x: np.exp((x.left + x.right) / 2))
+    zrate_by_bin = zrate_by_bin.sort_values('asset_bin_center')
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
+    sns.lineplot(data=zrate_by_bin, x='asset_bin_center', y='zrate', errorbar='ci')
+    plt.axvline(1e10, color='gray', linestyle='--', label='10B cutoff') 
+    plt.xscale('log')
+    plt.xlabel("Total Assets (log scale)")
+    plt.ylabel("Proportion of companies-quarters that received atleast one zombie data complaints")
+    plt.title("Rate of Receiving Zombie Data Complaints by Asset Size")
+    plt.legend()
+    save_plot(fig, 'zbin_rate_lineplot_company_quarterly_level.png', savepath)
+
+def get_col_quantiles(data, gpcols, bincols, subcol, qcol='', bins=5): 
+    '''
+    gpcols (list of str): Columns to group by
+    bincols (list of str): Columns to define groups for quantile computation
+    subcol (str): Column to compute quantiles on
+    qcol (str): Optional name for the new quantile column; auto-generated if blank
+    '''
+    if qcol == '':
+        qcol = subcol + '_Quantile'
+
+    for col in bincols:
+        if col not in gpcols:
+            gpcols.append(col)
+
+    tmp = data.copy()
+    gp = tmp.groupby(gpcols)[subcol].mean().reset_index()
+    gp[qcol] = gp.groupby(bincols)[subcol].transform(lambda x: pd.qcut(x, bins, labels=False, duplicates='drop') + 1)
+    tmp = tmp.merge(gp[gpcols + [qcol]], on=gpcols, how='left')
+    if len(bincols)==1:
+        print(pd.crosstab(gp[bincols[0]], gp[qcol]))
+    import pdb; pdb.set_trace()
+    return tmp
+
+def explore_income_effect_zctalvl(savepath):
+    # exclusion inclusion criteria
+    print(f"Exclusion criteria: starting with {len(df)} complaints")
+    tmp = df[df['ZIP code'].notna()].copy()
+    print(f"drop complaints without zipcode: {len(tmp)} complaints left")
+    tmp = tmp[tmp['zip'].notna()].copy()
+    print(f"drop complaints that cannot be matched with ACS dataset with zipcode: {len(tmp)} complaints left")
+    tmp = tmp[tmp['MedIncome']>0].copy()
+    print(f"drop complaints from zip code where median income information is unavailable: {len(tmp)} complaints left")
+    tmp = tmp[tmp['Company type']=='major credit bureaus'].copy()
+    print(f"only keep complaints sent to major credit bureus: {len(tmp)} complaints left")
+    print(f"finish constructing dataset on complaints with socio-demographic vars sent to major credit bureaus {len(tmp)}")
+    print(f"{tmp['Zombie data'].sum()} complaints are about zombie data")
+    #import pdb; pdb.set_trace()
+    #(1) x: median income, y: zprop, zcount, count (year-zip level)
+    total = tmp.groupby(['Year received', 'ZIP code']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'ZIP code']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'ZIP code'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+    sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+    sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (zip code-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (zip code-yearly level)')
+    axes[1].set_title('Number of all complaint by median household income (zip code-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, 'zprop_zip_yearly_level.png', savepath)
+
+    #(2) x: median income, y: zprop, zcount, count, hue: company (year-zip level) - heterogeneity between companies
+    total = tmp.groupby(['Year received', 'ZIP code', 'Company']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'ZIP code', 'Company']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'ZIP code', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', hue='Company', palette='colorblind', legend=True, ax=axes[0], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='zcount', hue='Company', palette='colorblind', legend=True, ax=axes[1], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='count', hue='Company', palette='colorblind', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (zip code-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (zip code-yearly level)')
+    axes[1].set_title('Number of all complaint by median household income (zip code-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, 'zprop_zip_yearly_level_company.png', savepath)
+
+
+    #(3) plot each year separately - x: median income, y: zprop, zcount, count (year-zip level)
+    for year in [2020, 2021, 2022, 2023, 2024]:
+        total = tmp[tmp['Year received']==year].groupby(['ZIP code']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+        zombie = tmp[(tmp['Zombie data'] == 1)&(tmp['Year received']==year)].groupby(['ZIP code']).agg(zcount=('Zombie data', 'size')).reset_index()
+        data = pd.merge(total, zombie, on=['ZIP code'], how='left')
+        data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+        sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+        sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+        sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+        axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+        axes[0].set_ylabel('Proportion of zombie complaints')
+        axes[1].set_ylabel('Zombie complaint count')
+        axes[2].set_ylabel('Total complaint count')
+
+        axes[0].set_title('Proportion of of zombie complaints by median household income (zip code-yearly level)')
+        axes[1].set_title('Number of zombie complaint by median household income (zip code-yearly level)')
+        axes[1].set_title('Number of all complaint by median household income (zip code-yearly level)')
+
+        axes[1].set_yscale('symlog')
+        axes[2].set_yscale('symlog')
+
+        for i in range(3):
+            axes[i].set_ylim(ymin=0)
+        save_plot(fig, f'zprop_zip_yearly_level_year{year}.png', savepath)
+
+    #(4) temporary - zip3 level x: median income, y: zprop, zcount, count (year-zip3 level)
+    tmp['ZIP3'] = tmp['ZIP code'].astype(str).str[:3]
+    total = tmp.groupby(['Year received', 'ZIP3']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'ZIP3']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'ZIP3'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+    sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+    sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (zip3 code-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (zip3 code-yearly level)')
+    axes[1].set_title('Number of all complaint by median household income (zip3 code-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, 'zprop_zip3_yearly_level.png', savepath)
+
+    #(5) temporary - zip3 level x: median income, y: zprop, zcount, count (year-zip3 level)
+    for year in [2020, 2021, 2022, 2023, 2024]:
+        total = tmp[tmp['Year received']==year].groupby(['ZIP3']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+        zombie = tmp[(tmp['Zombie data'] == 1)&(tmp['Year received']==year)].groupby(['ZIP3']).agg(zcount=('Zombie data', 'size')).reset_index()
+        data = pd.merge(total, zombie, on=['ZIP3'], how='left')
+        data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+        sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+        sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+        sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+        axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+        axes[0].set_ylabel('Proportion of zombie complaints')
+        axes[1].set_ylabel('Zombie complaint count')
+        axes[2].set_ylabel('Total complaint count')
+
+        axes[0].set_title(f'Proportion of of zombie complaints by median household income (zip3 code level, year {year})')
+        axes[1].set_title(f'Number of zombie complaint by median household income (zip3 code level, year {year})')
+        axes[1].set_title(f'Number of all complaint by median household income (zip3 codelevel, year {year})')
+
+        axes[1].set_yscale('symlog')
+        axes[2].set_yscale('symlog')
+
+        for i in range(3):
+            axes[i].set_ylim(ymin=0)
+        save_plot(fig, f'zprop_zip3_yearly_level_year{year}.png', savepath)
+
+def explore_income_effect_countylvl(savepath):
+    # exclusion inclusion criteria
+    print(f"Exclusion criteria: starting with {len(df)} complaints")
+    tmp = df[df['ZIP code'].notna()].copy()
+    print(f"drop complaints without zipcode or three digits zipcodes: {len(tmp)} complaints left")
+    tmp = tmp[~tmp['ZIP code'].str.endswith('XX')].copy()
+    print(f"drop complaints with three digits zipcode: {len(tmp)} complaints left")
+    tmp = tmp[tmp['zip'].notna()].copy()
+    print(f"drop complaints that cannot be matched with ACS dataset with zipcode: {len(tmp)} complaints left")
+    tmp = tmp[tmp['MedIncome']>0].copy()
+    print(f"drop complaints from zip code where median income information is unavailable: {len(tmp)} complaints left")
+    tmp = tmp[tmp['Company type']=='major credit bureaus'].copy()
+    print(f"only keep complaints sent to major credit bureus: {len(tmp)} complaints left")
+    print(f"finish constructing dataset on complaints with socio-demographic vars sent to major credit bureaus {len(tmp)}")
+    print(f"{tmp['Zombie data'].sum()} complaints are about zombie data")
+    county_zip = df.groupby(['Year received','fips'])['ZIP code'].nunique().reset_index(name='nuniq')
+    print(f"on average, a county includes {county_zip['nuniq'].mean():.2f} zip codes")
+
+    # histogram of median income
+    total = tmp.groupby(['Year received', 'fips']).agg(income=('RealMedIncome', 'mean')).reset_index()
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    sns.histplot(data=total, x='income', ax=ax, element='bars', color='skyblue', alpha=1)
+    ax.set_xlabel('Median Income')
+    ax.set_ylabel('number of county-years')
+    save_plot(fig, 'dist_medincome_county_yearly_level.png', savepath)
+    
+    #(1) x: median income, y: zprop, zcount, count (year-county level)
+    total = tmp.groupby(['Year received', 'fips']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'fips']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'fips'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+    sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+    sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+    axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, 'zprop_county_yearly_level.png', savepath)
+
+    #(2) x: median income, y: zprop, zcount, count, hue: company (year-zip level) - heterogeneity between companies
+    total = tmp.groupby(['Year received', 'fips', 'Company']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'fips', 'Company']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'fips', 'Company'], how='left')
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', hue='Company', palette='colorblind', legend=True, ax=axes[0], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='zcount', hue='Company', palette='colorblind', legend=True, ax=axes[1], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='count', hue='Company', palette='colorblind', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+    axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, 'zprop_county_yearly_level_company.png', savepath)
+
+    #(3) plot each year separately - x: median income, y: zprop, zcount, count (year-zip level)
+    for year in range(2013,2025):
+        total = tmp[tmp['Year received']==year].groupby(['fips']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+        zombie = tmp[(tmp['Zombie data'] == 1)&(tmp['Year received']==year)].groupby(['fips']).agg(zcount=('Zombie data', 'size')).reset_index()
+        data = pd.merge(total, zombie, on=['fips'], how='left')
+        data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+        sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+        sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+        sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+        axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+        axes[0].set_ylabel('Proportion of zombie complaints')
+        axes[1].set_ylabel('Zombie complaint count')
+        axes[2].set_ylabel('Total complaint count')
+
+        axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+        axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+        axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+        axes[1].set_yscale('symlog')
+        axes[2].set_yscale('symlog')
+
+        for i in range(3):
+            axes[i].set_ylim(ymin=0)
+        save_plot(fig, f'zprop_county_yearly_level_year{year}.png', savepath)
+
+    #(4) heatmap - proportion of zombie data median income quantile (county level) X year sent level
+    #tmp = get_col_quantiles(tmp, ['fips'], ['Year received'], 'MedIncome', qcol='', bins=5)
+    tmp['MedIncome_Quantile'] = pd.qcut(tmp['RealMedIncome'], q=5, labels=False)
+    data = tmp.groupby(['Year received', 'MedIncome_Quantile']).agg(income=('MedIncome', 'mean'),  zprop=('Zombie data', 'mean')).reset_index()
+    pivot= data.pivot(index='MedIncome_Quantile', columns='Year received', values='zprop')
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
+    sns.heatmap(pivot, annot=True, fmt=".2f", cmap='YlGnBu', cbar_kws={'label': 'Proportion zombie data complaints'})
+    ax.invert_yaxis()
+    plt.title("Proportions of zombie data complaints by county-level median income quantile and year")
+    plt.ylabel("Median Income Quantile (upper = richer)")
+    plt.xlabel("Year received")
+    save_plot(fig, 'zprop_heatmap_county_yearly_level.png', savepath)
+    tmp.drop('MedIncome_Quantile', axis=1, inplace=True)
+
+def explore_income_effect_countylvl_with_cutoff(cutoff, savepath, bins=5): # only include counties with yearly complaint counts > cutoff
+    # exclusion inclusion criteria
+    tmp = df[df['ZIP code'].notna()].copy()
+    tmp = tmp[~tmp['ZIP code'].str.endswith('XX')].copy()
+    tmp = tmp[tmp['zip'].notna()].copy()
+    tmp = tmp[tmp['MedIncome']>0].copy()
+    tmp = tmp[tmp['Company type']=='major credit bureaus'].copy()
+    county_zip = df.groupby(['Year received','fips'])['ZIP code'].nunique().reset_index(name='nuniq')
+
+    ### only include counties with yearly complaint counts > cutoff
+    # histogram of median income 
+    total = tmp.groupby(['Year received', 'fips']).agg(income=('RealMedIncome', 'mean'), count=('RealMedIncome', 'size')).reset_index()
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    sns.histplot(data=total[total['count']>cutoff], x='income', ax=ax, element='bars', color='skyblue', alpha=1)
+    ax.set_xlabel('Median Income')
+    ax.set_ylabel('number of county-years')
+    save_plot(fig, f'dist_medincome_county_yearly_level_cutoff{cutoff}.png', savepath)
+    
+
+    #(1) x: median income, y: zprop, zcount, count (year-county level)
+    total = tmp.groupby(['Year received', 'fips']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'fips']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'fips'], how='left')
+    data = data[data['count']>cutoff]
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+    sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+    sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+    axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, f'zprop_county_yearly_level_cutoff{cutoff}.png', savepath)
+
+    #(2) x: median income, y: zprop, zcount, count, hue: company (year-zip level) - heterogeneity between companies
+    total = tmp.groupby(['Year received', 'fips', 'Company']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'fips', 'Company']).agg(zcount=('Zombie data', 'size')).reset_index()
+    data = pd.merge(total, zombie, on=['Year received', 'fips', 'Company'], how='left')
+    data = data[data['count']>cutoff]
+    data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+    sns.scatterplot(data=data, x='income', y='zprop', hue='Company', palette='colorblind', legend=True, ax=axes[0], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='zcount', hue='Company', palette='colorblind', legend=True, ax=axes[1], alpha=0.7)
+    sns.scatterplot(data=data, x='income', y='count', hue='Company', palette='colorblind', legend=True, ax=axes[2], alpha=0.7)
+    axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+    axes[0].set_ylabel('Proportion of zombie complaints')
+    axes[1].set_ylabel('Zombie complaint count')
+    axes[2].set_ylabel('Total complaint count')
+
+    axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+    axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+    axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+    axes[1].set_yscale('symlog')
+    axes[2].set_yscale('symlog')
+
+    for i in range(3):
+        axes[i].set_ylim(ymin=0)
+
+    save_plot(fig, f'zprop_county_yearly_level_company_cutoff{cutoff}.png', savepath)
+
+    #(3) plot each year separately - x: median income, y: zprop, zcount, count (year-zip level)
+    for year in range(2013,2025):
+        total = tmp[tmp['Year received']==year].groupby(['fips']).agg(income=('RealMedIncome', 'mean'),  count=('Zombie data', 'size'), zprop=('Zombie data', 'mean')).reset_index()
+        zombie = tmp[(tmp['Zombie data'] == 1)&(tmp['Year received']==year)].groupby(['fips']).agg(zcount=('Zombie data', 'size')).reset_index()
+        data = pd.merge(total, zombie, on=['fips'], how='left')
+        data = data[data['count']>cutoff]
+        data['zcount'] = data['zcount'].fillna(0).astype(int)
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+        sns.scatterplot(data=data, x='income', y='zprop', legend=True, ax=axes[0])
+        sns.scatterplot(data=data, x='income', y='zcount', legend=True, ax=axes[1])
+        sns.scatterplot(data=data, x='income', y='count', legend=True, ax=axes[2])
+        axes[2].set_xlabel('Median Household Income (in 2013 inflation adjusted dollars)')
+
+        axes[0].set_ylabel('Proportion of zombie complaints')
+        axes[1].set_ylabel('Zombie complaint count')
+        axes[2].set_ylabel('Total complaint count')
+
+        axes[0].set_title('Proportion of of zombie complaints by median household income (county-yearly level)')
+        axes[1].set_title('Number of zombie complaint by median household income (county-yearly level)')
+        axes[2].set_title('Number of all complaint by median household income (county-yearly level)')
+
+        axes[1].set_yscale('symlog')
+        axes[2].set_yscale('symlog')
+
+        for i in range(3):
+            axes[i].set_ylim(ymin=0)
+        save_plot(fig, f'zprop_county_yearly_level_year{year}_cutoff{cutoff}.png', savepath)
+
+    #(4) heatmap - proportion of zombie data median income quantile (county level) X year sent level
+    total = tmp.groupby(['Year received', 'fips']).agg(count=('Zombie data', 'size'), income=('RealMedIncome', 'mean')).reset_index()
+    zombie = tmp[tmp['Zombie data'] == 1].groupby(['Year received', 'fips']).agg(zcount=('Zombie data', 'size')).reset_index()
+    merged = pd.merge(total, zombie, on=['Year received', 'fips'], how='left')
+    merged['zcount'] = merged['zcount'].fillna(0).astype(int)
+    merged = merged[merged['count']>cutoff]
+
+    #merged = get_col_quantiles(merged, ['fips'], ['Year received'], 'income', qcol='', bins=bins)
+    merged['income_Quantile'] = pd.qcut(merged['income'], q=bins, labels=False)
+    data = merged.groupby(['Year received', 'income_Quantile']).agg(totcount=('count', 'sum'), totzcount=('zcount', 'sum')).reset_index()
+    data['zprop'] = data['totzcount']/data['totcount']
+    pivot= data.pivot(index='income_Quantile', columns='Year received', values='zprop')
+
+    fig, ax = plt.subplots(1, 1, figsize=(16, 14))
+    sns.heatmap(pivot, annot=True, fmt=".2f", cmap='YlGnBu', cbar_kws={'label': 'Proportion zombie data complaints'})
+    ax.invert_yaxis()
+    plt.title("Proportions of zombie data complaints by county-level median income quantile and year")
+    plt.ylabel("Median Income Quantile (upper = richer)")
+    plt.xlabel("Year received")
+    if bins==5:
+        save_plot(fig, f'zprop_heatmap_county_yearly_level_cutoff{cutoff}.png', savepath)
+    else:
+        save_plot(fig, f'zprop_heatmap_county_yearly_level_cutoff{cutoff}_{bins}bins.png', savepath)
+
+    
 
 if __name__ == "__main__":
     ### load dataset
@@ -1398,7 +2056,6 @@ if __name__ == "__main__":
     time_trend_in_relief_rate()
 
     ### DV: proportion of zombie data related complaints among all compliants
-    df['Regulation'] = df['Regulation'].fillna('NA') ### TEMPORARY
     savepath = os.path.join(cPATH, 'temp', 'DV_prop_zombie_complaints')
     if not os.path.exists(savepath):
         os.mkdir(savepath)
@@ -1414,6 +2071,42 @@ if __name__ == "__main__":
     tmp.loc[tmp['Company type'].isin(['bank', 'bank holding company']), 'Company type'] = 'bank_bhc'
     time_trend_in_DV([('Zombie data', 'mean')], tmp, ['Proportion of zombie data complaints'], savepath)
     plot_prop_zombie_per_complaint_counts(tmp, savepath)
-    '''
-    # check regulation effect 
+
+    # explores CFPB regulation effect 
     regulation_effect_analysis()
+    CFPB_depository_analysis()
+
+    ### DV: receiving zombie complaints
+    savepath = os.path.join(cPATH, 'temp', 'DV_bin_zombie_complaints')
+    if not os.path.exists(savepath):
+        os.mkdir(savepath)
+
+    tmp = df[(df['Company type'].isin(['bank', 'bank holding company', 'credit union']))
+            &(df['Quarter sent'] >= pd.Period('2012Q2'))
+            &(df['BankCount']<2)
+            &(df['Total assets'].notna())].copy()
+
+    plot_DV_per_size([('Zombie data', 'any')], tmp, ['Receiving any zombie data complaints'], savepath)
+    regulation_effect_in_binary_zombie_counts(savepath)
+
+    savepath = os.path.join(cPATH, 'temp', 'MedianIncome')
+    if not os.path.exists(savepath):
+        os.mkdir(savepath)
+    explore_income_effect_zctalvl(savepath)
+    '''
+    savepath = os.path.join(cPATH, 'temp', 'MedianIncome_countylvl')
+    if not os.path.exists(savepath):
+        os.mkdir(savepath)
+    explore_income_effect_countylvl(savepath)
+    explore_income_effect_countylvl_with_cutoff(500, savepath)
+    explore_income_effect_countylvl_with_cutoff(100, savepath)
+    explore_income_effect_countylvl_with_cutoff(30, savepath)
+    explore_income_effect_countylvl_with_cutoff(10, savepath)
+    explore_income_effect_countylvl_with_cutoff(100, savepath, bins=10)
+    explore_income_effect_countylvl_with_cutoff(100, savepath, bins=20)
+    explore_income_effect_countylvl_with_cutoff(100, savepath, bins=4)
+
+
+
+    
+    
