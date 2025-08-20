@@ -144,6 +144,7 @@ if __name__ == "__main__":
     ################################### STUDY 1: CCPA X Persistent data ####################################
     ### DV: relief rate, unit of observation: state X quarterly level, treatment: CCPA X Persistent data ###
     ########################################################################################################
+    
     df_val = exclusion_criteria(df, study_num=1)
     df_val.columns = df_val.columns.str.strip()             
     df_val.columns = df_val.columns.str.replace(' ', '_') 
@@ -212,3 +213,76 @@ if __name__ == "__main__":
     latex_table = format_latex(results_df, label='tab:t1', caption="The CCPA effect on relief rate for first-time and persistent data complaint", remark=remark)
     print(latex_table)
 
+    ########################################### STUDY 1: CCPA X Persistent data ###########################################
+    ### DV: #complaints per population, unit of observation: state X quarterly level, treatment: CCPA X Persistent data ###
+    #######################################################################################################################
+    df_val = exclusion_criteria(df, study_num=1)
+    df_val = df_val[df_val['Population_state'].notna()].copy()
+    df_val['CCPA'] = (df_val['Quarter received'] > pd.Timestamp('2019-12-31')).astype(int)
+    df_val.columns = df_val.columns.str.strip()             
+    df_val.columns = df_val.columns.str.replace(' ', '_') 
+
+    df_grouped = df_val.groupby(['State', 'Quarter_received', 'Is_CA', 'CCPA'], as_index=False).agg(count=('Is relief', 'size'), pop=('Population_state', 'first')) # unit of observation
+    df_grouped['Is_CA'] = pd.Categorical(df_grouped['Is_CA'], categories=['CA', 'Other'], ordered=False)
+    df_grouped['count_per_pop'] = df_grouped['count']/df_grouped['pop']
+
+    model1 = smf.ols("count_per_pop ~ C(CCPA, Treatment(reference=False)) + C(Is_CA, Treatment(reference='Other')) + C(Persistent_data, Treatment(reference=False))", data=df_grouped).fit(cov_type='HC1')
+    model2 = smf.ols("count_per_pop ~ C(CCPA, Treatment(reference=False)) * C(Is_CA, Treatment(reference='Other')) + C(Persistent_data, Treatment(reference=False))", data=df_grouped).fit(cov_type='HC1')
+    model3 = smf.ols("count_per_pop ~ C(CCPA, Treatment(reference=False)) + C(Is_CA, Treatment(reference='Other')) * C(Persistent_data, Treatment(reference=False))", data=df_grouped).fit(cov_type='HC1')
+    model4 = smf.ols("count_per_pop ~ C(CCPA, Treatment(reference=False)) * C(Persistent_data, Treatment(reference=False)) + C(Is_CA, Treatment(reference='Other'))", data=df_grouped).fit(cov_type='HC1')
+    model5 = smf.ols("count_per_pop ~ C(CCPA, Treatment(reference=False)) * C(Is_CA, Treatment(reference='Other')) * C(Persistent_data, Treatment(reference=False))", data=df_grouped).fit(cov_type='HC1')
+
+    '''
+    model4 = smf.ols(
+        formula="relief_rate ~  C(Persistent_data, Treatment(reference=False)) + C(Is_CA, Treatment(reference='Other')) + C(Quarter_sent) "
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))"
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other'))"
+                " + C(CCPA, Treatment(reference=False)):C(Persistent_data, Treatment(reference=False))"
+                " + C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))",
+        data=df_panel,
+        ).fit(cov_type='HC1') 
+   
+    
+    df_panel = df_grouped.set_index(['State', 'Quarter_sent'])
+    model5 = PanelOLS.from_formula(
+        formula="relief_rate ~  C(Persistent_data, Treatment(reference=False)) + C(CCPA, Treatment(reference=False))"
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))"
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other'))"
+                " + C(CCPA, Treatment(reference=False)):C(Persistent_data, Treatment(reference=False))"
+                " + C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))"
+                " + EntityEffects",
+        data=df_grouped, 
+        drop_absorbed=True
+        ).fit(cov_type='clustered', cluster_entity=True)
+
+    model6 = PanelOLS.from_formula(
+        formula="relief_rate ~  C(Persistent_data, Treatment(reference=False))"
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))"
+                " + C(CCPA, Treatment(reference=False)):C(Is_CA, Treatment(reference='Other'))"
+                " + C(CCPA, Treatment(reference=False)):C(Persistent_data, Treatment(reference=False))"
+                " + C(Is_CA, Treatment(reference='Other')):C(Persistent_data, Treatment(reference=False))"
+                " + EntityEffects + TimeEffects",
+        data=df_grouped, 
+        drop_absorbed=True
+        ).fit(cov_type='clustered', cluster_entity=True)
+    '''
+    rename_dict = {
+        "C(CCPA, Treatment(reference=False))[T.True]": "CCPA",
+        "C(CCPA, Treatment(reference=False))[True]": "CCPA",
+        "C(Is_CA, Treatment(reference='Other'))[T.CA]": "CA",
+        "C(Is_CA, Treatment(reference='Other'))[CA]": "CA",
+        "C(Persistent_data, Treatment(reference=False))[T.True]": "PersistentData",
+        "C(Persistent_data, Treatment(reference=False))[True]": "PersistentData"
+        }
+
+
+    df1 = extract_results("model1", model1, rename_dict)
+    df2 = extract_results("model2", model2, rename_dict)
+    df3 = extract_results("model3", model3, rename_dict)
+    df4 = extract_results("model4", model4, rename_dict)
+    df5 = extract_results("model5", model5, rename_dict)
+    results_df = pd.concat([df1, df2, df3, df4, df5])
+
+    remark = [r"\begin{tablenotes}", r"\scriptsize", r"\item \textit{Notes}: Robust standard errors in parentheses. $^{*}p<0.05$, $^{**}p<0.01$, $^{***}p<0.001$.", r"\end{tablenotes}"]
+    latex_table = format_latex(results_df, label='tab:t1', caption="The CCPA effect on relief rate for first-time and persistent data complaint", remark=remark)
+    print(latex_table)
